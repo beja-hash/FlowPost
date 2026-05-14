@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: posting-web
+    runtime: node
+    plan: starter
+    buildCommand: npm ci && npx prisma generate && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: posting-postgres
+          property: connectionString
+      - key: NEXTAUTH_URL
+        sync: false
+      - key: NEXTAUTH_SECRET
+        generateValue: true
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: POLZA_API_KEY
+        sync: false
+      - key: MODEL_ARTICLE_GENERATION
+        value: openai/gpt-4.1-mini
+      - key: CRON_SECRET
+        generateValue: true
+      - key: STRATEGY_CATCH_UP_WINDOW_HOURS
+        value: "72"
+
+databases:
+  - name: posting-postgres
+    databaseName: posting
+    user: posting

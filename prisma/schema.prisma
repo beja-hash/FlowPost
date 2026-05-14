@@ -1,0 +1,519 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+  DELETED
+}
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum WorkspacePlan {
+  STARTER
+  GROWTH
+  PRO
+}
+
+enum BrandStatus {
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+enum DistributionPlatformType {
+  DZEN
+  VC
+}
+
+enum PlatformAccountStatus {
+  CONNECTED
+  EXPIRED
+  NOT_CONNECTED
+}
+
+enum TopicIntent {
+  INFORMATIONAL
+  COMPARISON
+  COMMERCIAL
+}
+
+enum ContentPlanStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+enum AssetStatus {
+  DRAFT
+  READY
+  DISTRIBUTING
+  PUBLISHED
+  ARCHIVED
+}
+
+enum VariantStatus {
+  DRAFT
+  READY
+  APPROVED
+  PUBLISHED
+  FAILED
+  ARCHIVED
+}
+
+enum PublicationStatus {
+  PLANNED
+  SCHEDULED
+  PUBLISHED
+  FAILED
+  CANCELED
+}
+
+enum SessionStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+enum ContentStrategyStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  STOPPED
+}
+
+enum StrategyDistributionMode {
+  AUTO
+  EQUAL
+  MORE_DZEN
+  MORE_VC
+  CUSTOM
+}
+
+enum StrategyGenerationMode {
+  QUALITY
+  FAST
+}
+
+enum StrategyPublishMode {
+  DRAFT_ONLY
+  GENERATE_AND_SCHEDULE
+  AUTO_PUBLISH
+}
+
+enum StrategyPublishExecutionMode {
+  CLIENT_AGENT
+  SERVER_MANAGED
+}
+
+enum StrategyArticleTaskStatus {
+  PLANNED
+  BRIEF_GENERATED
+  ARTICLE_GENERATED
+  SCHEDULED
+  WAITING_AGENT
+  MISSED
+  CATCHUP_PENDING
+  PUBLISHING
+  PUBLISHED
+  FAILED
+  SKIPPED
+  WAITING_CONNECTION
+}
+
+model User {
+  id            String     @id @default(cuid())
+  email         String     @unique @db.VarChar(320)
+  name          String?    @db.VarChar(120)
+  image         String?    @db.VarChar(2048)
+  emailVerified DateTime?
+  status        UserStatus @default(ACTIVE)
+  timezone      String     @default("UTC") @db.VarChar(64)
+  locale        String?    @db.VarChar(16)
+  lastLoginAt   DateTime?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  workspacesOwned   Workspace[]       @relation("WorkspaceOwner")
+  memberships       WorkspaceMember[]
+  articleAssets     ArticleAsset[]    @relation("AssetAuthor")
+  contentStrategies ContentStrategy[]
+  agentHeartbeats   AgentHeartbeat[]
+  sessions          Session[]
+  accounts          Account[]
+  platformAccounts  PlatformAccount[]
+
+  @@index([status, createdAt])
+  @@index([lastLoginAt])
+}
+
+model Workspace {
+  id          String        @id @default(cuid())
+  ownerId     String
+  name        String        @db.VarChar(160)
+  slug        String        @db.VarChar(180)
+  plan        WorkspacePlan @default(GROWTH)
+  description String?       @db.VarChar(1000)
+  timezone    String        @default("UTC") @db.VarChar(64)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  owner             User              @relation("WorkspaceOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  members           WorkspaceMember[]
+  brands            Brand[]
+  topicClusters     TopicCluster[]
+  contentPlans      ContentPlan[]
+  contentStrategies ContentStrategy[]
+  articleAssets     ArticleAsset[]
+  publications      Publication[]
+
+  @@unique([ownerId, slug])
+  @@index([ownerId, updatedAt])
+}
+
+model WorkspaceMember {
+  id          String        @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        WorkspaceRole @default(MEMBER)
+  joinedAt    DateTime      @default(now())
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId, role])
+}
+
+model Brand {
+  id             String      @id @default(cuid())
+  workspaceId    String
+  name           String      @db.VarChar(160)
+  slug           String      @db.VarChar(180)
+  siteUrl        String      @db.VarChar(2048)
+  description    String?     @db.VarChar(1200)
+  industry       String?     @db.VarChar(120)
+  geography      String?     @db.VarChar(120)
+  targetAudience String?     @db.VarChar(500)
+  primaryCta     String?     @db.VarChar(240)
+  status         BrandStatus @default(ACTIVE)
+  lastActivityAt DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  archivedAt     DateTime?
+
+  workspace         Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  topicClusters     TopicCluster[]
+  contentPlans      ContentPlan[]
+  contentStrategies ContentStrategy[]
+  strategyTasks     StrategyArticleTask[]
+  articleAssets     ArticleAsset[]
+  publications      Publication[]
+
+  @@unique([workspaceId, slug])
+  @@unique([workspaceId, siteUrl])
+  @@index([workspaceId, status, updatedAt])
+  @@index([lastActivityAt])
+}
+
+model DistributionPlatform {
+  id          String                   @id @default(cuid())
+  type        DistributionPlatformType @unique
+  slug        String                   @unique @db.VarChar(64)
+  name        String                   @db.VarChar(120)
+  description String?                  @db.VarChar(500)
+  styleGuide  String?                  @db.Text
+  constraints Json?
+  isActive    Boolean                  @default(true)
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+
+  articleVariants ArticleVariant[]
+  publications    Publication[]
+
+  @@index([isActive, name])
+}
+
+model PlatformAccount {
+  userId      String
+  platform    String                @db.VarChar(64)
+  status      PlatformAccountStatus @default(NOT_CONNECTED)
+  sessionPath String?               @db.VarChar(2048)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, platform])
+  @@index([userId, status])
+}
+
+model TopicCluster {
+  id          String      @id @default(cuid())
+  workspaceId String
+  brandId     String
+  keyword     String      @db.VarChar(160)
+  angle       String?     @db.VarChar(240)
+  intent      TopicIntent
+  priority    Int         @default(50)
+  rationale   String?     @db.VarChar(1000)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  brand         Brand          @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  contentPlans  ContentPlan[]
+  articleAssets ArticleAsset[]
+
+  @@unique([brandId, keyword])
+  @@index([workspaceId, intent, priority])
+}
+
+model ContentPlan {
+  id              String            @id @default(cuid())
+  workspaceId     String
+  brandId         String
+  topicClusterId  String?
+  name            String            @db.VarChar(180)
+  status          ContentPlanStatus @default(DRAFT)
+  cadencePerMonth Int               @default(8)
+  notes           String?           @db.Text
+  startsAt        DateTime?
+  endsAt          DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  brand         Brand          @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  topicCluster  TopicCluster?  @relation(fields: [topicClusterId], references: [id], onDelete: SetNull)
+  articleAssets ArticleAsset[]
+
+  @@index([workspaceId, status, updatedAt])
+  @@index([brandId, status, startsAt])
+}
+
+model ArticleAsset {
+  id             String       @id @default(cuid())
+  workspaceId    String
+  brandId        String
+  planId         String?
+  topicClusterId String?
+  authorId       String?
+  title          String       @db.VarChar(240)
+  slug           String       @db.VarChar(260)
+  canonicalBody  String       @db.Text
+  summary        String?      @db.Text
+  primaryKeyword String?      @db.VarChar(160)
+  ctaText        String?      @db.Text
+  ctaUrl         String?      @db.VarChar(2048)
+  intent         TopicIntent?
+  generationMeta Json?
+  status         AssetStatus  @default(DRAFT)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  archivedAt     DateTime?
+
+  workspace     Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  brand         Brand                 @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  plan          ContentPlan?          @relation(fields: [planId], references: [id], onDelete: SetNull)
+  topicCluster  TopicCluster?         @relation(fields: [topicClusterId], references: [id], onDelete: SetNull)
+  author        User?                 @relation("AssetAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  variants      ArticleVariant[]
+  publications  Publication[]
+  strategyTasks StrategyArticleTask[]
+
+  @@unique([brandId, slug])
+  @@index([workspaceId, status, updatedAt])
+  @@index([brandId, status, createdAt])
+}
+
+model ContentStrategy {
+  id                   String                       @id @default(cuid())
+  workspaceId          String
+  userId               String
+  brandId              String
+  name                 String                       @db.VarChar(180)
+  status               ContentStrategyStatus        @default(DRAFT)
+  platforms            Json
+  articlesPerDay       Int
+  distributionMode     StrategyDistributionMode     @default(AUTO)
+  vcPerDay             Int?
+  dzenPerDay           Int?
+  timeSlots            Json
+  platformTimeSlots    Json?
+  daysOfWeek           Json
+  startDate            DateTime
+  endDate              DateTime
+  generationMode       StrategyGenerationMode       @default(QUALITY)
+  publishMode          StrategyPublishMode          @default(GENERATE_AND_SCHEDULE)
+  publishExecutionMode StrategyPublishExecutionMode @default(CLIENT_AGENT)
+  cta                  String?                      @db.Text
+  link                 String?                      @db.VarChar(2048)
+  goal                 String?                      @db.Text
+  topicDirections      String?                      @db.Text
+  forbiddenTopics      String?                      @db.Text
+  createdAt            DateTime                     @default(now())
+  updatedAt            DateTime                     @updatedAt
+
+  workspace Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  brand     Brand                 @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  tasks     StrategyArticleTask[]
+
+  @@index([workspaceId, status, updatedAt])
+  @@index([brandId, status, startDate])
+  @@index([userId, status])
+}
+
+model StrategyArticleTask {
+  id            String                    @id @default(cuid())
+  strategyId    String
+  brandId       String
+  articleId     String?
+  platform      String                    @db.VarChar(32)
+  scheduledAt   DateTime
+  status        StrategyArticleTaskStatus @default(PLANNED)
+  topic         String?                   @db.VarChar(240)
+  title         String?                   @db.VarChar(240)
+  contentFormat String?                   @db.VarChar(64)
+  tone          String?                   @db.VarChar(64)
+  mainThesis    String?                   @db.Text
+  brief         Json?
+  error         String?                   @db.Text
+  attempts      Int                       @default(0)
+  createdAt     DateTime                  @default(now())
+  updatedAt     DateTime                  @updatedAt
+
+  strategy ContentStrategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+  brand    Brand           @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  article  ArticleAsset?   @relation(fields: [articleId], references: [id], onDelete: SetNull)
+
+  @@unique([strategyId, platform, scheduledAt])
+  @@index([strategyId, status, scheduledAt])
+  @@index([brandId, status, scheduledAt])
+  @@index([articleId])
+}
+
+model AgentHeartbeat {
+  id         String   @id @default(cuid())
+  userId     String
+  deviceId   String   @db.VarChar(120)
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceId])
+  @@index([userId, lastSeenAt])
+}
+
+model ArticleVariant {
+  id              String        @id @default(cuid())
+  assetId         String
+  platformId      String
+  headline        String        @db.VarChar(240)
+  body            String        @db.Text
+  callToAction    String?       @db.Text
+  status          VariantStatus @default(DRAFT)
+  complianceNotes String?       @db.Text
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  asset        ArticleAsset         @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  platform     DistributionPlatform @relation(fields: [platformId], references: [id], onDelete: Cascade)
+  publications Publication[]
+
+  @@unique([assetId, platformId])
+  @@index([platformId, status, updatedAt])
+}
+
+model Publication {
+  id          String            @id @default(cuid())
+  workspaceId String
+  brandId     String
+  assetId     String
+  variantId   String
+  platformId  String
+  status      PublicationStatus @default(PLANNED)
+  scheduledAt DateTime?
+  publishedAt DateTime?
+  externalUrl String?           @db.VarChar(2048)
+  trackingUrl String?           @db.VarChar(2048)
+  clickCount  Int               @default(0)
+  leadCount   Int               @default(0)
+  lastError   String?           @db.Text
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  workspace Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  brand     Brand                @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  asset     ArticleAsset         @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  variant   ArticleVariant       @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  platform  DistributionPlatform @relation(fields: [platformId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, status, scheduledAt])
+  @@index([brandId, status, updatedAt])
+  @@index([platformId, status, publishedAt])
+}
+
+model Session {
+  id           String        @id @default(cuid())
+  sessionToken String        @unique @db.VarChar(255)
+  userId       String
+  expires      DateTime
+  status       SessionStatus @default(ACTIVE)
+  ipAddress    String?       @db.VarChar(45)
+  userAgent    String?       @db.VarChar(512)
+  lastActiveAt DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([expires, status])
+}
+
+model Account {
+  id                       String   @id @default(cuid())
+  userId                   String
+  type                     String   @db.VarChar(32)
+  provider                 String   @db.VarChar(64)
+  providerAccountId        String   @db.VarChar(255)
+  refresh_token            String?  @db.Text
+  access_token             String?  @db.Text
+  expires_at               Int?
+  token_type               String?  @db.VarChar(32)
+  scope                    String?  @db.VarChar(255)
+  id_token                 String?  @db.Text
+  session_state            String?  @db.VarChar(255)
+  refresh_token_expires_in Int?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId, provider])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique @db.VarChar(255)
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@index([expires])
+}
