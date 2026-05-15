@@ -20,7 +20,7 @@ import {
 import { prisma } from "@/infrastructure/db/prisma";
 import { getPlatformConfig } from "@/infrastructure/platforms/platform-registry";
 import { SessionManager } from "@/infrastructure/platforms/session-manager";
-import { requireWorkspaceForUser } from "@/features/workspaces/server/workspace-service";
+import { ensureUserWorkspace } from "@/features/workspaces/server/workspace-service";
 import { generateText } from "@/lib/llm";
 import { normalizeHttpUrl } from "@/lib/url";
 
@@ -316,7 +316,7 @@ function toData(input: CreateStrategyInput | UpdateStrategyInput) {
 }
 
 export async function listStrategies(userId: string) {
-  const workspace = await requireWorkspaceForUser(userId);
+  const workspace = await ensureUserWorkspace(userId);
   const strategies = await prisma.contentStrategy.findMany({
     where: { workspaceId: workspace.id },
     include: {
@@ -377,7 +377,7 @@ export async function getStrategy(userId: string, strategyId: string) {
 }
 
 export async function createStrategy(userId: string, input: CreateStrategyInput) {
-  const workspace = await requireWorkspaceForUser(userId);
+  const workspace = await ensureUserWorkspace(userId);
   const brand = await ensureBrandAccess(userId, input.brandId);
 
   if (brand.workspaceId !== workspace.id) {

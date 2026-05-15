@@ -1,4 +1,4 @@
-import { UserStatus, WorkspacePlan, WorkspaceRole } from "@prisma/client";
+import { Prisma, UserStatus, WorkspacePlan, WorkspaceRole } from "@prisma/client";
 
 import { prisma } from "@/infrastructure/db/prisma";
 import { debugLog } from "@/lib/debug-log";
@@ -135,6 +135,151 @@ export async function getWorkspaceShell(userId: string) {
   } catch (error) {
     console.error("[workspace:shell] failed", error);
     return null;
+  }
+}
+
+export async function ensureUserWorkspace(userId: string) {
+  const existing = await getWorkspaceShell(userId);
+
+  if (existing) {
+    return existing;
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      timezone: true,
+      status: true,
+    },
+  });
+
+  if (!user || user.status !== UserStatus.ACTIVE) {
+    throw new Error("Пользователь не найден или неактивен.");
+  }
+
+  const workspaceName = buildWorkspaceName(user.name, user.email);
+  const fallbackSlug = `workspace-${user.id}`;
+
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const membership = await tx.workspaceMember.findFirst({
+        where: { userId },
+        orderBy: { joinedAt: "asc" },
+        select: {
+          role: true,
+          workspace: {
+            select: {
+              id: true,
+              name: true,
+              plan: true,
+              description: true,
+            },
+          },
+        },
+      });
+
+      if (membership) {
+        return {
+          id: membership.workspace.id,
+          name: membership.workspace.name,
+          plan: membership.workspace.plan,
+          description: membership.workspace.description,
+          role: membership.role,
+        };
+      }
+
+      const ownedWorkspace = await tx.workspace.findFirst({
+        where: { ownerId: userId },
+        orderBy: { createdAt: "asc" },
+        select: {
+          id: true,
+          name: true,
+          plan: true,
+          description: true,
+        },
+      });
+
+      if (ownedWorkspace) {
+        const member = await tx.workspaceMember.upsert({
+          where: {
+            workspaceId_userId: {
+              workspaceId: ownedWorkspace.id,
+              userId,
+            },
+          },
+          update: {
+            role: WorkspaceRole.OWNER,
+          },
+          create: {
+            workspaceId: ownedWorkspace.id,
+            userId,
+            role: WorkspaceRole.OWNER,
+          },
+          select: { role: true },
+        });
+
+        return {
+          id: ownedWorkspace.id,
+          name: ownedWorkspace.name,
+          plan: ownedWorkspace.plan,
+          description: ownedWorkspace.description,
+          role: member.role,
+        };
+      }
+
+      const workspace = await tx.workspace.create({
+        data: {
+          ownerId: userId,
+          name: workspaceName,
+          slug: fallbackSlug,
+          plan: WorkspacePlan.GROWTH,
+          timezone: user.timezone || "UTC",
+          description:
+            "Рабочее пространство для ИИ-контента, публикаций, площадок и аналитики.",
+          members: {
+            create: {
+              userId,
+              role: WorkspaceRole.OWNER,
+            },
+          },
+        },
+        select: {
+          id: true,
+          name: true,
+          plan: true,
+          description: true,
+          members: {
+            where: { userId },
+            select: { role: true },
+            take: 1,
+          },
+        },
+      });
+
+      return {
+        id: workspace.id,
+        name: workspace.name,
+        plan: workspace.plan,
+        description: workspace.description,
+        role: workspace.members[0]?.role ?? WorkspaceRole.OWNER,
+      };
+    });
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      const workspace = await getWorkspaceShell(userId);
+
+      if (workspace) {
+        return workspace;
+      }
+    }
+
+    throw error;
   }
 }
 
