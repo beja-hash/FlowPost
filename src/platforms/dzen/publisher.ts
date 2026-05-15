@@ -6,6 +6,7 @@ import type { BrowserContext, Locator, Page } from "playwright";
 
 import type { BasePublisher, PublisherOpenOptions } from "@/platforms/base-publisher";
 import { SessionManager } from "@/infrastructure/platforms/session-manager";
+import { debugLog } from "@/lib/debug-log";
 
 type DzenPublisherLogContext = {
   userId: string;
@@ -38,7 +39,7 @@ function logDzenStep(
   step: string,
   context: Partial<DzenPublisherLogContext> & Record<string, unknown> = {},
 ) {
-  console.log("[dzen-publisher]", {
+  debugLog("[dzen-publisher]", {
     step,
     ...context,
   });
@@ -110,7 +111,7 @@ async function cleanupProfileLocks(profilePath: string) {
 
 async function createTemporaryProfileCopy(profilePath: string) {
   const temporaryProfilePath = await mkdtemp(
-    path.join(os.tmpdir(), "posting-dzen-profile-"),
+    path.join(/* turbopackIgnore: true */ os.tmpdir(), "posting-dzen-profile-"),
   );
 
   await cp(profilePath, temporaryProfilePath, {

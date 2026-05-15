@@ -4,6 +4,7 @@ import {
   VcPublisherError,
   type VcPublisherLogContext,
 } from "@/platforms/vc/types";
+import { debugLog } from "@/lib/debug-log";
 
 export async function humanDelay(min = 300, max = 1200) {
   const delay = Math.floor(Math.random() * (max - min + 1)) + min;
@@ -14,7 +15,7 @@ export function logVcStep(
   step: string,
   context: Partial<VcPublisherLogContext> & Record<string, unknown> = {},
 ) {
-  console.log("[vc-publisher]", {
+  debugLog("[vc-publisher]", {
     step,
     ...context,
   });

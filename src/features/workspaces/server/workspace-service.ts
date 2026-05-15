@@ -1,6 +1,7 @@
-import { WorkspacePlan, WorkspaceRole } from "@prisma/client";
+import { UserStatus, WorkspacePlan, WorkspaceRole } from "@prisma/client";
 
 import { prisma } from "@/infrastructure/db/prisma";
+import { debugLog } from "@/lib/debug-log";
 import { slugify } from "@/lib/slugify";
 
 function buildWorkspaceName(name?: string | null, email?: string | null) {
@@ -42,19 +43,19 @@ export async function provisionWorkspaceForUser(params: {
   email?: string | null;
   timezone?: string | null;
 }) {
-  console.log("[workspace:provision] start", { userId: params.userId });
-  console.log("[workspace:provision] before prisma.workspaceMember.findFirst");
+  debugLog("[workspace:provision] start", { userId: params.userId });
+  debugLog("[workspace:provision] before prisma.workspaceMember.findFirst");
   const membership = await prisma.workspaceMember.findFirst({
     where: { userId: params.userId },
     select: { workspaceId: true },
   });
-  console.log("[workspace:provision] after prisma.workspaceMember.findFirst", {
+  debugLog("[workspace:provision] after prisma.workspaceMember.findFirst", {
     userId: params.userId,
     hasMembership: Boolean(membership),
   });
 
   if (membership) {
-    console.log("[workspace:provision] existing workspace", {
+    debugLog("[workspace:provision] existing workspace", {
       workspaceId: membership.workspaceId,
     });
     return membership.workspaceId;
@@ -63,7 +64,7 @@ export async function provisionWorkspaceForUser(params: {
   const workspaceName = buildWorkspaceName(params.name, params.email);
   const workspaceSlug = await generateWorkspaceSlug(params.userId, workspaceName);
 
-  console.log("[workspace:provision] before prisma.workspace.create", {
+  debugLog("[workspace:provision] before prisma.workspace.create", {
     userId: params.userId,
     workspaceSlug,
   });
@@ -85,7 +86,7 @@ export async function provisionWorkspaceForUser(params: {
     },
     select: { id: true },
   });
-  console.log("[workspace:provision] after prisma.workspace.create", {
+  debugLog("[workspace:provision] after prisma.workspace.create", {
     workspaceId: workspace.id,
   });
 
@@ -94,25 +95,14 @@ export async function provisionWorkspaceForUser(params: {
 
 export async function getWorkspaceShell(userId: string) {
   try {
-    console.log("[workspace:shell] before prisma.user.findUnique", { userId });
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true },
-    });
-    console.log("[workspace:shell] after prisma.user.findUnique", {
-      userId,
-      found: Boolean(user),
-    });
-
-    if (!user) {
-      return null;
-    }
-
-    console.log("[workspace:shell] before prisma.workspaceMember.findFirst", {
+    debugLog("[workspace:shell] before prisma.workspaceMember.findFirst", {
       userId,
     });
     const membership = await prisma.workspaceMember.findFirst({
-      where: { userId },
+      where: {
+        userId,
+        user: { status: UserStatus.ACTIVE },
+      },
       orderBy: {
         joinedAt: "asc",
       },
@@ -128,7 +118,7 @@ export async function getWorkspaceShell(userId: string) {
         },
       },
     });
-    console.log("[workspace:shell] after prisma.workspaceMember.findFirst", {
+    debugLog("[workspace:shell] after prisma.workspaceMember.findFirst", {
       userId,
       hasMembership: Boolean(membership),
     });

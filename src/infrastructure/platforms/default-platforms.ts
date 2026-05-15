@@ -1,6 +1,13 @@
 import { prisma } from "@/infrastructure/db/prisma";
 import type { PlatformConfig } from "@/infrastructure/platforms/platform-registry";
 import { platforms } from "@/infrastructure/platforms/platform-registry";
+import { debugLog } from "@/lib/debug-log";
+
+const DEFAULT_PLATFORMS_CACHE_MS =
+  process.env.NODE_ENV === "production" ? 60 * 60 * 1000 : 30 * 1000;
+
+let ensuredAt = 0;
+let ensurePromise: Promise<void> | null = null;
 
 function assertPlatformConfig(platform: PlatformConfig) {
   if (!platform.slug) {
@@ -9,12 +16,25 @@ function assertPlatformConfig(platform: PlatformConfig) {
 }
 
 export async function ensureDefaultPlatforms() {
-  console.log("[platforms:defaults] start", { count: platforms.length });
-  await Promise.all(
+  const now = Date.now();
+
+  if (ensurePromise) {
+    return ensurePromise;
+  }
+
+  if (ensuredAt && now - ensuredAt < DEFAULT_PLATFORMS_CACHE_MS) {
+    debugLog("[platforms:defaults] cache hit", {
+      ageMs: now - ensuredAt,
+    });
+    return;
+  }
+
+  debugLog("[platforms:defaults] start", { count: platforms.length });
+  ensurePromise = Promise.all(
     platforms.map((platform) => {
       assertPlatformConfig(platform);
 
-      console.log("[platforms:defaults] before upsert", {
+      debugLog("[platforms:defaults] before upsert", {
         slug: platform.slug,
       });
       return prisma.distributionPlatform.upsert({
@@ -36,13 +56,21 @@ export async function ensureDefaultPlatforms() {
           isActive: true,
         },
       }).then((result) => {
-        console.log("[platforms:defaults] after upsert", {
+        debugLog("[platforms:defaults] after upsert", {
           slug: platform.slug,
           id: result.id,
         });
         return result;
       });
     }),
-  );
-  console.log("[platforms:defaults] done");
+  )
+    .then(() => {
+      ensuredAt = Date.now();
+      debugLog("[platforms:defaults] done");
+    })
+    .finally(() => {
+      ensurePromise = null;
+    });
+
+  return ensurePromise;
 }

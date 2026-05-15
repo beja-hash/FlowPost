@@ -7,12 +7,13 @@ import { auth } from "@/infrastructure/auth/session";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { debugLog } from "@/lib/debug-log";
 
 export default async function SignInPage() {
   const session = await auth();
 
   if (session?.user?.id) {
-    console.log("[auth:sign-in-page] redirect authenticated user to /dashboard", {
+    debugLog("[auth:sign-in-page] redirect authenticated user to /dashboard", {
       userId: session.user.id,
     });
     redirect("/dashboard");

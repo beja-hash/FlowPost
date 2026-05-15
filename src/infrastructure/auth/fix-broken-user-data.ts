@@ -2,11 +2,12 @@ import { BrandStatus, DistributionPlatformType } from "@prisma/client";
 
 import { prisma } from "@/infrastructure/db/prisma";
 import { ensureDefaultPlatforms } from "@/infrastructure/platforms/default-platforms";
+import { debugLog } from "@/lib/debug-log";
 
 const repairedUsers = new Set<string>();
 
 async function repairDistributionPlatforms() {
-  console.log("[auth:repair] platforms start");
+  debugLog("[auth:repair] platforms start");
 
   try {
     await prisma.$executeRaw`
@@ -28,9 +29,9 @@ async function repairDistributionPlatforms() {
   }
 
   try {
-    console.log("[auth:repair] before ensureDefaultPlatforms");
+    debugLog("[auth:repair] before ensureDefaultPlatforms");
     await ensureDefaultPlatforms();
-    console.log("[auth:repair] after ensureDefaultPlatforms");
+    debugLog("[auth:repair] after ensureDefaultPlatforms");
   } catch (error) {
     console.error("[auth:repair] ensureDefaultPlatforms failed", error);
   }
@@ -72,20 +73,20 @@ async function repairDistributionPlatforms() {
     console.error("[auth:repair] platform verification failed", error);
   }
 
-  console.log("[auth:repair] platforms done");
+  debugLog("[auth:repair] platforms done");
 }
 
 export async function fixBrokenUserData(userId: string) {
   if (repairedUsers.has(userId)) {
-    console.log("[auth:repair] skipped, already scheduled", { userId });
+    debugLog("[auth:repair] skipped, already scheduled", { userId });
     return;
   }
 
   repairedUsers.add(userId);
-  console.log("[auth:repair] start", { userId });
+  debugLog("[auth:repair] start", { userId });
 
   try {
-    console.log("[auth:repair] before prisma.user.findUnique");
+    debugLog("[auth:repair] before prisma.user.findUnique");
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -94,7 +95,7 @@ export async function fixBrokenUserData(userId: string) {
         status: true,
       },
     });
-    console.log("[auth:repair] after prisma.user.findUnique", {
+    debugLog("[auth:repair] after prisma.user.findUnique", {
       found: Boolean(user),
       userId,
     });
@@ -110,7 +111,7 @@ export async function fixBrokenUserData(userId: string) {
   await repairDistributionPlatforms();
 
   try {
-    console.log("[auth:repair] before prisma.brand.findMany");
+    debugLog("[auth:repair] before prisma.brand.findMany");
     const brands = await prisma.brand.findMany({
       where: {
         workspace: {
@@ -128,7 +129,7 @@ export async function fixBrokenUserData(userId: string) {
         status: true,
       },
     });
-    console.log("[auth:repair] after prisma.brand.findMany", {
+    debugLog("[auth:repair] after prisma.brand.findMany", {
       count: brands.length,
     });
 
@@ -143,7 +144,7 @@ export async function fixBrokenUserData(userId: string) {
       .map((brand) => brand.id);
 
     if (brokenBrandIds.length > 0) {
-      console.log("[auth:repair] before prisma.brand.updateMany", {
+      debugLog("[auth:repair] before prisma.brand.updateMany", {
         count: brokenBrandIds.length,
       });
       await prisma.brand.updateMany({
@@ -153,14 +154,14 @@ export async function fixBrokenUserData(userId: string) {
           archivedAt: new Date(),
         },
       });
-      console.log("[auth:repair] after prisma.brand.updateMany");
+      debugLog("[auth:repair] after prisma.brand.updateMany");
     }
   } catch (error) {
     console.error("[auth:repair] brands repair failed", error);
   }
 
   try {
-    console.log("[auth:repair] before prisma.publication.findMany");
+    debugLog("[auth:repair] before prisma.publication.findMany");
     const publications = await prisma.publication.findMany({
       where: {
         workspace: {
@@ -178,7 +179,7 @@ export async function fixBrokenUserData(userId: string) {
         platformId: true,
       },
     });
-    console.log("[auth:repair] after prisma.publication.findMany", {
+    debugLog("[auth:repair] after prisma.publication.findMany", {
       count: publications.length,
     });
 
@@ -194,17 +195,17 @@ export async function fixBrokenUserData(userId: string) {
       .map((publication) => publication.id);
 
     if (brokenPublicationIds.length > 0) {
-      console.log("[auth:repair] before prisma.publication.deleteMany", {
+      debugLog("[auth:repair] before prisma.publication.deleteMany", {
         count: brokenPublicationIds.length,
       });
       await prisma.publication.deleteMany({
         where: { id: { in: brokenPublicationIds } },
       });
-      console.log("[auth:repair] after prisma.publication.deleteMany");
+      debugLog("[auth:repair] after prisma.publication.deleteMany");
     }
   } catch (error) {
     console.error("[auth:repair] publications repair failed", error);
   }
 
-  console.log("[auth:repair] done", { userId });
+  debugLog("[auth:repair] done", { userId });
 }

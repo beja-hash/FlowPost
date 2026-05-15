@@ -15,24 +15,15 @@ import {
   type PlatformSlug,
 } from "@/infrastructure/platforms/platform-registry";
 import { SessionManager } from "@/infrastructure/platforms/session-manager";
-
-export class ArticleWorkflowError extends Error {
-  constructor(
-    public readonly statusCode: number,
-    public readonly code: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = "ArticleWorkflowError";
-  }
-}
+import { debugLog } from "@/lib/debug-log";
+import { ArticleWorkflowError } from "@/services/article-workflow-error";
 
 function isDzenNavigationDebugEnabled() {
   return process.env.DEBUG_DZEN_NAVIGATION_ONLY === "true";
 }
 
 function logArticleStep(step: string, context: Record<string, unknown> = {}) {
-  console.log("[article-workflow]", { step, ...context });
+  debugLog("[article-workflow]", { step, ...context });
 }
 
 function logArticleError(

@@ -17,6 +17,7 @@ import {
   SessionManager,
 } from "@/infrastructure/platforms/session-manager";
 import { getPlatformEditorService } from "@/services/platforms";
+import { debugLog } from "@/lib/debug-log";
 
 type ConnectLogContext = {
   userId: string;
@@ -40,7 +41,7 @@ function logConnectStep(
   step: string,
   context: Partial<ConnectLogContext> & Record<string, unknown> = {},
 ) {
-  console.log("[platform-connect]", {
+  debugLog("[platform-connect]", {
     step,
     ...context,
   });
@@ -237,9 +238,8 @@ export async function launchPlatformWithSession(userId: string, platform: string
   }
 
   logConnectStep("manual-launch:session-loaded", logContext);
-  const launchResult = await getPlatformEditorService(config.id).launchEditor(
-    userId,
-  );
+  const editorService = await getPlatformEditorService(config.id);
+  const launchResult = await editorService.launchEditor(userId);
   logConnectStep("manual-launch:browser-opened", {
     ...logContext,
     editorUrl: launchResult.editorUrl,

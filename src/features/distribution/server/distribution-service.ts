@@ -20,6 +20,7 @@ import {
 import { prisma } from "@/infrastructure/db/prisma";
 import { ensureDefaultPlatforms } from "@/infrastructure/platforms/default-platforms";
 import { platformSlugs } from "@/infrastructure/platforms/platform-registry";
+import { debugLog } from "@/lib/debug-log";
 import { slugify } from "@/lib/slugify";
 import { getDomainFromUrl, normalizeHttpUrl } from "@/lib/url";
 
@@ -239,9 +240,9 @@ function mapSafeAsset(
 
 async function safeLoad<T>(label: string, fallback: T, loader: () => Promise<T>) {
   try {
-    console.log(`[distribution:safe] before ${label}`);
+    debugLog(`[distribution:safe] before ${label}`);
     const result = await loader();
-    console.log(`[distribution:safe] after ${label}`);
+    debugLog(`[distribution:safe] after ${label}`);
     return result;
   } catch (error) {
     console.error(`[distribution:safe] ${label} error`, error);

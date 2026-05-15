@@ -20,14 +20,9 @@ export function GoogleSignInButton() {
       size="lg"
       onClick={() =>
         startTransition(() => {
-          console.log("[auth:google-button] signIn start", { callbackUrl });
-          void signIn("google", { callbackUrl })
-            .then(() => {
-              console.log("[auth:google-button] signIn promise resolved");
-            })
-            .catch((error) => {
-              console.error("[auth:google-button] signIn failed", error);
-            });
+          void signIn("google", { callbackUrl }).catch((error) => {
+            console.error("[auth:google-button] signIn failed", error);
+          });
         })
       }
       disabled={isPending}

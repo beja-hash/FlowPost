@@ -1,10 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z, ZodError } from "zod";
 
-import {
-  ArticleWorkflowError,
-  scheduleArticleForUser,
-} from "@/services/article-workflow";
+import { scheduleArticleForUser } from "@/services/article-generation-workflow";
+import { ArticleWorkflowError } from "@/services/article-workflow-error";
 import { auth } from "@/infrastructure/auth/session";
 
 export const runtime = "nodejs";

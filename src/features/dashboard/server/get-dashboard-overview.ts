@@ -1,6 +1,7 @@
 import { AssetStatus, BrandStatus, PublicationStatus } from "@prisma/client";
 
 import { prisma } from "@/infrastructure/db/prisma";
+import { debugLog } from "@/lib/debug-log";
 
 import type {
   DashboardActivityItem,
@@ -223,9 +224,9 @@ function emptyDashboardOverview(): DashboardOverview {
 
 async function safeLoad<T>(label: string, fallback: T, loader: () => Promise<T>) {
   try {
-    console.log(`[dashboard:safe] before ${label}`);
+    debugLog(`[dashboard:safe] before ${label}`);
     const result = await loader();
-    console.log(`[dashboard:safe] after ${label}`);
+    debugLog(`[dashboard:safe] after ${label}`);
     return result;
   } catch (error) {
     console.error(`[dashboard:safe] ${label} error`, error);

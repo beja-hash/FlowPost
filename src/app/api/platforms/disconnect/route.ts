@@ -7,6 +7,7 @@ import {
 } from "@/features/platforms/server/platform-service";
 import { auth } from "@/infrastructure/auth/session";
 import { platformSlugs } from "@/infrastructure/platforms/platform-registry";
+import { debugLog } from "@/lib/debug-log";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -70,7 +71,7 @@ function toErrorResponse(error: unknown) {
 
 export async function POST(request: NextRequest) {
   try {
-    console.log("[api/platforms/disconnect]", {
+    debugLog("[api/platforms/disconnect]", {
       step: "request:start",
       runtime,
     });

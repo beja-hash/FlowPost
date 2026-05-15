@@ -4,22 +4,23 @@ import GoogleProvider from "next-auth/providers/google";
 
 import { createLoggedPrismaAdapter } from "@/infrastructure/auth/logged-prisma-adapter";
 import { prisma } from "@/infrastructure/db/prisma";
+import { debugLog, debugWarn } from "@/lib/debug-log";
 import { env } from "@/lib/env";
 
 const isProduction = env.NODE_ENV === "production";
 
 export const authOptions: NextAuthOptions = {
   adapter: createLoggedPrismaAdapter(),
-  debug: true,
+  debug: !isProduction,
   logger: {
     error(code, metadata) {
       console.error("[auth:logger:error]", code, metadata);
     },
     warn(code) {
-      console.warn("[auth:logger:warn]", code);
+      debugWarn("[auth:logger:warn]", { code });
     },
     debug(code, metadata) {
-      console.log("[auth:logger:debug]", code, metadata);
+      debugLog("[auth:logger:debug]", { code, metadata });
     },
   },
   session: {
@@ -74,10 +75,10 @@ export const authOptions: NextAuthOptions = {
   ],
   events: {
     async createUser({ user }) {
-      console.log("[auth:createUser] start", { userId: user.id, email: user.email });
+      debugLog("[auth:createUser] start", { userId: user.id, email: user.email });
 
       try {
-        console.log("[auth:createUser] before prisma.user.update");
+        debugLog("[auth:createUser] before prisma.user.update");
         const dbUser = await prisma.user.update({
           where: { id: user.id },
           data: {
@@ -90,49 +91,49 @@ export const authOptions: NextAuthOptions = {
             timezone: true,
           },
         });
-        console.log("[auth:createUser] after prisma.user.update", {
+        debugLog("[auth:createUser] after prisma.user.update", {
           userId: dbUser.id,
         });
 
-        console.log("[auth:createUser] workspace provisioning skipped during OAuth callback", {
+        debugLog("[auth:createUser] workspace provisioning skipped during OAuth callback", {
           userId: dbUser.id,
         });
       } catch (error) {
         console.error("[auth:createUser] failed", error);
       }
 
-      console.log("[auth:createUser] done", { userId: user.id });
+      debugLog("[auth:createUser] done", { userId: user.id });
     },
   },
   callbacks: {
     async redirect({ url, baseUrl }) {
-      console.log("[auth:redirect] start", { url, baseUrl });
+      debugLog("[auth:redirect] start", { url, baseUrl });
 
       const targetUrl = url.startsWith("/")
         ? new URL(url, baseUrl)
         : new URL(url);
 
       if (targetUrl.pathname === "/sign-in") {
-        console.log("[auth:redirect] prevent sign-in loop");
+        debugLog("[auth:redirect] prevent sign-in loop");
         return `${baseUrl}/dashboard`;
       }
 
       if (url.startsWith("/")) {
         const nextUrl = `${baseUrl}${url}`;
-        console.log("[auth:redirect] relative redirect", { nextUrl });
+        debugLog("[auth:redirect] relative redirect", { nextUrl });
         return nextUrl;
       }
 
       if (url.startsWith(baseUrl)) {
-        console.log("[auth:redirect] same-origin redirect", { url });
+        debugLog("[auth:redirect] same-origin redirect", { url });
         return url;
       }
 
-      console.log("[auth:redirect] fallback dashboard");
+      debugLog("[auth:redirect] fallback dashboard");
       return `${baseUrl}/dashboard`;
     },
     async signIn({ user, account, profile }) {
-      console.log("[auth:signIn] start", {
+      debugLog("[auth:signIn] start", {
         userId: user.id,
         email: user.email,
         provider: account?.provider,
@@ -140,21 +141,21 @@ export const authOptions: NextAuthOptions = {
 
       if (account?.provider === "google") {
         const googleProfile = profile as { email_verified?: boolean } | undefined;
-        console.log("[auth:signIn] google callback received", {
+        debugLog("[auth:signIn] google callback received", {
           emailVerified: googleProfile?.email_verified,
         });
 
         if (googleProfile?.email_verified === false) {
-          console.log("[auth:signIn] rejected: google email is not verified");
+          debugLog("[auth:signIn] rejected: google email is not verified");
           return false;
         }
       }
 
-      console.log("[auth:signIn] minimal OAuth flow accepted");
+      debugLog("[auth:signIn] minimal OAuth flow accepted");
       return true;
     },
     async jwt({ token, user }) {
-      console.log("[auth:jwt] start", {
+      debugLog("[auth:jwt] start", {
         hasUser: Boolean(user),
         tokenSub: token.sub,
       });
@@ -162,7 +163,7 @@ export const authOptions: NextAuthOptions = {
       if (user) {
         token.id = user.id;
         token.status = user.status;
-        console.log("[auth:jwt] attached user data", {
+        debugLog("[auth:jwt] attached user data", {
           userId: user.id,
           status: user.status,
         });
@@ -172,14 +173,14 @@ export const authOptions: NextAuthOptions = {
         token.status = UserStatus.ACTIVE;
       }
 
-      console.log("[auth:jwt] done", {
+      debugLog("[auth:jwt] done", {
         tokenSub: token.sub,
         tokenId: token.id,
       });
       return token;
     },
     async session({ session, token }) {
-      console.log("[auth:session] start", {
+      debugLog("[auth:session] start", {
         tokenSub: token.sub,
         tokenId: token.id,
       });
@@ -193,7 +194,7 @@ export const authOptions: NextAuthOptions = {
             : UserStatus.ACTIVE;
       }
 
-      console.log("[auth:session] done", {
+      debugLog("[auth:session] done", {
         sessionUserId: session.user?.id,
         sessionStatus: session.user?.status,
       });

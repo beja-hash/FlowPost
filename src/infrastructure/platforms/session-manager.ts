@@ -24,7 +24,7 @@ export type PlatformStorageState = {
   }>;
 };
 
-const sessionsRoot = path.join(process.cwd(), "sessions");
+const sessionsRoot = path.join(/* turbopackIgnore: true */ process.cwd(), "sessions");
 const allowedPlatforms = new Set<PlatformConnection["platform"]>(platformSlugs);
 
 function assertSafeUserId(userId: string) {

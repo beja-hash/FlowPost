@@ -7,6 +7,7 @@ import {
 } from "@/features/platforms/server/platform-service";
 import { auth } from "@/infrastructure/auth/session";
 import { platformSlugs } from "@/infrastructure/platforms/platform-registry";
+import { debugLog, debugWarn } from "@/lib/debug-log";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -71,7 +72,7 @@ function toErrorResponse(error: unknown) {
 
 export async function POST(request: NextRequest) {
   try {
-    console.log("[api/platforms/connect]", {
+    debugLog("[api/platforms/connect]", {
       step: "request:start",
       runtime,
     });
@@ -79,7 +80,7 @@ export async function POST(request: NextRequest) {
     const session = await auth();
 
     if (!session?.user?.id) {
-      console.warn("[api/platforms/connect]", {
+      debugWarn("[api/platforms/connect]", {
         step: "auth:unauthorized",
       });
 
@@ -98,7 +99,7 @@ export async function POST(request: NextRequest) {
 
     const payload = connectPlatformSchema.parse(await request.json());
 
-    console.log("[api/platforms/connect]", {
+    debugLog("[api/platforms/connect]", {
       step: "payload:parsed",
       userId: session.user.id,
       platform: payload.platform,
@@ -106,7 +107,7 @@ export async function POST(request: NextRequest) {
 
     const platform = await connectPlatform(session.user.id, payload.platform);
 
-    console.log("[api/platforms/connect]", {
+    debugLog("[api/platforms/connect]", {
       step: "request:success",
       userId: session.user.id,
       platform: payload.platform,

@@ -1,5 +1,7 @@
 import OpenAI from "openai";
 
+import { debugLog } from "@/lib/debug-log";
+
 export const DEFAULT_ARTICLE_GENERATION_MODEL = "openai/gpt-4.1-mini";
 export const POLZA_BASE_URL = "https://polza.ai/api/v1";
 
@@ -72,7 +74,7 @@ export async function generateText(
   const outputTokens = completion.usage?.completion_tokens ?? 0;
   const estimatedCost = estimateCostUsd(model, inputTokens, outputTokens);
 
-  console.log("[llm]", {
+  debugLog("[llm]", {
     model,
     input_tokens: inputTokens,
     output_tokens: outputTokens,

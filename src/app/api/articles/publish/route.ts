@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z, ZodError } from "zod";
 
-import {
-  ArticleWorkflowError,
-  publishArticleForUser,
-} from "@/services/article-workflow";
+import { ArticleWorkflowError } from "@/services/article-workflow-error";
 import { auth } from "@/infrastructure/auth/session";
 
 export const runtime = "nodejs";
@@ -65,6 +62,7 @@ export async function POST(request: NextRequest) {
     }
 
     const payload = publishSchema.parse(await request.json());
+    const { publishArticleForUser } = await import("@/services/article-workflow");
     const result = await publishArticleForUser(session.user.id, payload.articleId);
 
     return NextResponse.json(result);

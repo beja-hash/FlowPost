@@ -5,6 +5,7 @@ import {
   type PlatformSlug,
 } from "@/infrastructure/platforms/platform-registry";
 import { SessionManager } from "@/infrastructure/platforms/session-manager";
+import { debugLog } from "@/lib/debug-log";
 import type {
   PlatformEditorLaunchResult,
   PlatformEditorService,
@@ -21,7 +22,7 @@ function logPlatformEditor(
   step: string,
   context: Partial<LaunchLogContext> & Record<string, unknown> = {},
 ) {
-  console.log("[platform-editor]", {
+  debugLog("[platform-editor]", {
     step,
     ...context,
   });

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { publishDueScheduledArticles } from "@/services/article-workflow";
 import { env } from "@/lib/env";
 
 export const runtime = "nodejs";
@@ -25,6 +24,9 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    const { publishDueScheduledArticles } = await import(
+      "@/services/article-workflow"
+    );
     const result = await publishDueScheduledArticles();
 
     return NextResponse.json(result);

@@ -15,9 +15,8 @@ import type { ArticleContentBrief, ArticleTone, ContentFormat } from "@/features
 import { createDistributionAsset } from "@/features/distribution/server/distribution-service";
 import {
   generateArticleForUser,
-  publishArticleForUser,
   scheduleArticleForUser,
-} from "@/services/article-workflow";
+} from "@/services/article-generation-workflow";
 import { prisma } from "@/infrastructure/db/prisma";
 import { getPlatformConfig } from "@/infrastructure/platforms/platform-registry";
 import { SessionManager } from "@/infrastructure/platforms/session-manager";
@@ -119,6 +118,11 @@ function devLog(step: string, context: Record<string, unknown>) {
 
 function hoursSince(date: Date, now = new Date()) {
   return (now.getTime() - date.getTime()) / 3_600_000;
+}
+
+async function publishArticleWithBrowserSession(userId: string, articleId: string) {
+  const { publishArticleForUser } = await import("@/services/article-workflow");
+  return publishArticleForUser(userId, articleId);
 }
 
 function normalizeOptional(value?: string | null) {
@@ -323,8 +327,20 @@ export async function listStrategies(userId: string) {
           status: true,
           scheduledAt: true,
           platform: true,
+          topic: true,
+          title: true,
+          contentFormat: true,
+          tone: true,
+          mainThesis: true,
+          error: true,
+          articleId: true,
+          attempts: true,
+          article: {
+            select: { id: true, title: true, status: true },
+          },
         },
         orderBy: { scheduledAt: "asc" },
+        take: 300,
       },
     },
     orderBy: { updatedAt: "desc" },
@@ -694,6 +710,21 @@ export async function buildArticleUniquenessContext(
     recentTheses: Array.from(theses).slice(0, 30),
     forbiddenRepeats: [...recentTitles.slice(0, 12), ...recentTopics.slice(0, 12)],
   };
+}
+
+export function groupStrategyTasksByPlatformAndDay<
+  T extends { platform: string; scheduledAt: Date | string },
+>(tasks: T[]) {
+  return tasks.reduce<Record<string, Record<string, T[]>>>((acc, task) => {
+    const platform = task.platform;
+    const scheduledAt =
+      task.scheduledAt instanceof Date ? task.scheduledAt : new Date(task.scheduledAt);
+    const day = scheduledAt.toISOString().slice(0, 10);
+
+    acc[platform] ??= {};
+    acc[platform][day] = [...(acc[platform][day] ?? []), task];
+    return acc;
+  }, {});
 }
 
 export async function generateStrategyArticleTask(
@@ -1352,7 +1383,7 @@ export async function runCatchUpPublishingForTask(
   const nextAttempts = task.attempts + 1;
 
   try {
-    const result = await publishArticleForUser(userId, task.articleId);
+    const result = await publishArticleWithBrowserSession(userId, task.articleId);
     await prisma.strategyArticleTask.update({
       where: { id: task.id },
       data: {
@@ -1464,7 +1495,7 @@ export async function runStrategyPublisher() {
         where: { id: task.id },
         data: { status: StrategyArticleTaskStatus.PUBLISHING, error: null },
       });
-      await publishArticleForUser(task.strategy.userId, task.articleId);
+      await publishArticleWithBrowserSession(task.strategy.userId, task.articleId);
       await prisma.strategyArticleTask.update({
         where: { id: task.id },
         data: { status: StrategyArticleTaskStatus.PUBLISHED, error: null },

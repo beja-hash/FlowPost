@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
 
+import { debugLog } from "@/lib/debug-log";
+
 const PROTECTED_PATHS = [
   "/dashboard",
   "/brands",
@@ -20,19 +22,19 @@ function matchesPath(pathname: string, paths: string[]) {
 
 export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
-  console.log("[auth:proxy] request", { pathname, search });
+  debugLog("[auth:proxy] request", { pathname, search });
   const token = await getToken({
     req: request,
     secret: process.env.NEXTAUTH_SECRET,
   });
-  console.log("[auth:proxy] token check", {
+  debugLog("[auth:proxy] token check", {
     pathname,
     hasToken: Boolean(token),
     tokenSub: token?.sub,
   });
 
   if (matchesPath(pathname, AUTH_PATHS) && token) {
-    console.log("[auth:proxy] redirect authenticated user to /dashboard");
+    debugLog("[auth:proxy] redirect authenticated user to /dashboard");
     return NextResponse.redirect(new URL("/dashboard", request.url));
   }
 
@@ -41,13 +43,13 @@ export async function proxy(request: NextRequest) {
     const signInUrl = new URL("/sign-in", request.url);
     signInUrl.searchParams.set("callbackUrl", callbackUrl);
 
-    console.log("[auth:proxy] redirect unauthenticated user to /sign-in", {
+    debugLog("[auth:proxy] redirect unauthenticated user to /sign-in", {
       callbackUrl,
     });
     return NextResponse.redirect(signInUrl);
   }
 
-  console.log("[auth:proxy] continue", { pathname });
+  debugLog("[auth:proxy] continue", { pathname });
   return NextResponse.next();
 }
 

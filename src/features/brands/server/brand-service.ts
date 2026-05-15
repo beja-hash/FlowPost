@@ -17,6 +17,7 @@ import {
   requireWorkspaceForUser,
 } from "@/features/workspaces/server/workspace-service";
 import { prisma } from "@/infrastructure/db/prisma";
+import { debugLog } from "@/lib/debug-log";
 import { ensureDefaultPlatforms } from "@/infrastructure/platforms/default-platforms";
 import { slugify } from "@/lib/slugify";
 import { getDomainFromUrl, normalizeHttpUrl } from "@/lib/url";
@@ -73,9 +74,9 @@ function mapBrand(brand: BrandListRecord): BrandListItem {
 
 async function safeLoad<T>(label: string, fallback: T, loader: () => Promise<T>) {
   try {
-    console.log(`[brands:safe] before ${label}`);
+    debugLog(`[brands:safe] before ${label}`);
     const result = await loader();
-    console.log(`[brands:safe] after ${label}`);
+    debugLog(`[brands:safe] after ${label}`);
     return result;
   } catch (error) {
     console.error(`[brands:safe] ${label} error`, error);

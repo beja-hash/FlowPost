@@ -1,5 +1,5 @@
 import { PlatformsManager } from "@/features/platforms/components/platforms-manager";
-import { listPlatformConnections } from "@/features/platforms/server/platform-service";
+import { listPlatformConnections } from "@/features/platforms/server/platform-query-service";
 import { requireSession } from "@/infrastructure/auth/session";
 
 export default async function PlatformsPage() {

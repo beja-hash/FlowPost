@@ -2,6 +2,7 @@ import type { Adapter, AdapterAccount } from "next-auth/adapters";
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
 
 import { prisma } from "@/infrastructure/db/prisma";
+import { debugLog } from "@/lib/debug-log";
 
 const AUTH_ADAPTER_TIMEOUT_MS = 10_000;
 
@@ -14,14 +15,14 @@ function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
 }
 
 async function withAdapterLog<T>(method: string, action: () => T | Promise<T>) {
-  console.log(`[auth:adapter] ${method} start`);
+    debugLog(`[auth:adapter] ${method} start`);
   const startedAt = Date.now();
 
   try {
     const result = action();
 
     if (!isPromiseLike(result)) {
-      console.log(`[auth:adapter] ${method} done`, {
+      debugLog(`[auth:adapter] ${method} done`, {
         elapsedMs: Date.now() - startedAt,
       });
       return result;
@@ -39,7 +40,7 @@ async function withAdapterLog<T>(method: string, action: () => T | Promise<T>) {
         }, AUTH_ADAPTER_TIMEOUT_MS);
       }),
     ]);
-    console.log(`[auth:adapter] ${method} done`, {
+    debugLog(`[auth:adapter] ${method} done`, {
       elapsedMs: Date.now() - startedAt,
     });
     return resolved;

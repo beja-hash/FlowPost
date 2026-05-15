@@ -1,4 +1,3 @@
-import { DzenPublisher } from "@/platforms/dzen/publisher";
 import type {
   PlatformEditorLaunchResult,
   PlatformEditorService,
@@ -6,6 +5,7 @@ import type {
 
 export const dzenPlatformService: PlatformEditorService = {
   async launchEditor(userId: string): Promise<PlatformEditorLaunchResult> {
+    const { DzenPublisher } = await import("@/platforms/dzen/publisher");
     const publisher = new DzenPublisher();
 
     await publisher.open({ userId });
