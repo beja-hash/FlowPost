@@ -2,11 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { z, ZodError } from "zod";
 
 import {
-  connectPlatform,
-  PlatformServiceError,
-} from "@/features/platforms/server/platform-service";
+  AgentServiceError,
+  createConnectPlatformJob,
+} from "@/features/agent/server/agent-service";
 import { auth } from "@/infrastructure/auth/session";
-import { platformSlugs } from "@/infrastructure/platforms/platform-registry";
+import {
+  getPlatformConfig,
+  platformSlugs,
+} from "@/infrastructure/platforms/platform-registry";
 import { debugLog, debugWarn } from "@/lib/debug-log";
 
 export const runtime = "nodejs";
@@ -29,7 +32,7 @@ function toErrorResponse(error: unknown) {
         : error,
   });
 
-  if (error instanceof PlatformServiceError) {
+  if (error instanceof AgentServiceError) {
     return NextResponse.json(
       {
         error: {
@@ -61,7 +64,8 @@ function toErrorResponse(error: unknown) {
     {
       error: {
         code: "INTERNAL_SERVER_ERROR",
-        message: "Не удалось подключить площадку.",
+        message:
+          "Для подключения браузера запустите FlowPost Agent на компьютере пользователя.",
       },
     },
     {
@@ -105,7 +109,14 @@ export async function POST(request: NextRequest) {
       platform: payload.platform,
     });
 
-    const platform = await connectPlatform(session.user.id, payload.platform);
+    const platformConfig = getPlatformConfig(payload.platform);
+    const agent = await createConnectPlatformJob({
+      userId: session.user.id,
+      platform: payload.platform,
+      sessionName: `FlowPost Agent: ${platformConfig?.name ?? payload.platform}`,
+    });
+    const apiUrl = request.nextUrl.origin;
+    const command = `FLOWPOST_API_URL=${apiUrl} FLOWPOST_AGENT_TOKEN=${agent.token} npm run agent`;
 
     debugLog("[api/platforms/connect]", {
       step: "request:success",
@@ -113,7 +124,25 @@ export async function POST(request: NextRequest) {
       platform: payload.platform,
     });
 
-    return NextResponse.json({ platform });
+    return NextResponse.json({
+      mode: "local_agent",
+      message:
+        "Для подключения браузера запустите FlowPost Agent на компьютере пользователя.",
+      platform: platformConfig
+        ? {
+            id: platformConfig.slug,
+            name: platformConfig.name,
+            platform: platformConfig.slug,
+            status: "not_connected",
+          }
+        : null,
+      agent: {
+        session: agent.session,
+        token: agent.token,
+        command,
+      },
+      job: agent.job,
+    });
   } catch (error) {
     return toErrorResponse(error);
   }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/saas/status-badge";
@@ -41,6 +41,38 @@ type PlatformsManagerProps = {
   initialPlatforms: PlatformConnection[];
 };
 
+type AgentJobStatus =
+  | "queued"
+  | "picked_up"
+  | "running"
+  | "waiting_user_login"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+type AgentJob = {
+  id: string;
+  type: string;
+  platform: string | null;
+  status: AgentJobStatus;
+};
+
+type AgentConnectState = {
+  token: string;
+  command: string;
+  job: AgentJob;
+};
+
+const agentStatusLabels: Record<AgentJobStatus, string> = {
+  queued: "Ожидает запуска FlowPost Agent",
+  picked_up: "Agent получил задание",
+  running: "Agent запускает браузер",
+  waiting_user_login: "Браузер открыт на вашем компьютере",
+  completed: "Подключение завершено",
+  failed: "Ошибка подключения",
+  cancelled: "Подключение отменено",
+};
+
 export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
   const [platforms, setPlatforms] = useState(initialPlatforms);
   const [selectedPlatform, setSelectedPlatform] =
@@ -54,6 +86,64 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
   const [disconnectingPlatform, setDisconnectingPlatform] = useState<
     PlatformConnection["platform"] | null
   >(null);
+  const [agentConnect, setAgentConnect] = useState<AgentConnectState | null>(
+    null,
+  );
+
+  async function refreshAgentJob(jobId: string) {
+    try {
+      const response = await fetch(`/api/agent/jobs/${jobId}/status`);
+      const body = (await response.json()) as {
+        job?: AgentJob;
+        error?: {
+          message?: string;
+        };
+      };
+
+      if (!response.ok || !body.job) {
+        throw new Error(body.error?.message ?? "Не удалось обновить статус.");
+      }
+
+      const nextJob = body.job;
+      setAgentConnect((current) =>
+        current ? { ...current, job: nextJob } : current,
+      );
+
+      if (nextJob.status === "completed" && nextJob.platform) {
+        setPlatforms((current) =>
+          current.map((platform) =>
+            platform.platform === nextJob.platform
+              ? { ...platform, status: "connected" }
+              : platform,
+          ),
+        );
+        toast.success("Браузер подключен через FlowPost Agent.");
+      }
+    } catch (error) {
+      console.error("[platform-agent-status]", error);
+    }
+  }
+
+  useEffect(() => {
+    if (!agentConnect?.job.id || agentConnect.job.status === "completed") {
+      return;
+    }
+
+    if (
+      agentConnect.job.status === "failed" ||
+      agentConnect.job.status === "cancelled"
+    ) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void refreshAgentJob(agentConnect.job.id);
+    }, 2500);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [agentConnect?.job.id, agentConnect?.job.status]);
 
   async function handleConnect() {
     if (!selectedPlatform) {
@@ -61,6 +151,7 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
     }
 
     setConnectingPlatform(selectedPlatform.platform);
+    setAgentConnect(null);
 
     try {
       const response = await fetch("/api/platforms/connect", {
@@ -75,26 +166,28 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
 
       const body = (await response.json()) as {
         platform?: PlatformConnection;
+        agent?: {
+          token: string;
+          command: string;
+        };
+        job?: AgentJob;
         error?: {
           message?: string;
         };
       };
 
-      if (!response.ok || !body.platform) {
+      if (!response.ok || !body.agent || !body.job) {
         throw new Error(
           body.error?.message ?? "Не удалось подключить платформу.",
         );
       }
 
-      setPlatforms((current) =>
-        current.map((platform) =>
-          platform.platform === body.platform?.platform
-            ? body.platform
-            : platform,
-        ),
-      );
-      setSelectedPlatform(null);
-      toast.success("Платформа подключена.");
+      setAgentConnect({
+        token: body.agent.token,
+        command: body.agent.command,
+        job: body.job,
+      });
+      toast.info("Задание создано. Запустите FlowPost Agent локально.");
     } catch (error) {
       toast.error(
         error instanceof Error
@@ -195,7 +288,7 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
     <div className="space-y-5">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Платформы</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
+        <p className="text-muted-foreground mt-1 text-sm">
           Площадки для публикации статей.
         </p>
       </div>
@@ -204,7 +297,7 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
         {platforms.map((platform) => (
           <Card
             key={platform.name}
-            className="rounded-xl border-border/70 shadow-none"
+            className="border-border/70 rounded-xl shadow-none"
           >
             <CardHeader className="grid-cols-[minmax(0,1fr)_auto]">
               <div className="min-w-0">
@@ -219,9 +312,7 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
                 <PlatformActions
                   platform={platform}
                   isLaunching={launchingPlatform === platform.platform}
-                  isDisconnecting={
-                    disconnectingPlatform === platform.platform
-                  }
+                  isDisconnecting={disconnectingPlatform === platform.platform}
                   onConnect={() => setSelectedPlatform(platform)}
                   onLaunch={() => void handleLaunch(platform)}
                   onDisconnect={() => void handleDisconnect(platform)}
@@ -240,29 +331,93 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
         onOpenChange={(open) => {
           if (!open) {
             setSelectedPlatform(null);
+            setAgentConnect(null);
           }
         }}
       >
-        <DialogContent>
+        <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>{selectedPlatform?.name}</DialogTitle>
+            <DialogTitle>Подключение браузера</DialogTitle>
             <DialogDescription>
-              Откроется браузер для входа
+              {selectedPlatform
+                ? `Платформа: ${selectedPlatform.name}`
+                : "Подключение платформы"}
             </DialogDescription>
           </DialogHeader>
+          <div className="space-y-5">
+            <p className="text-muted-foreground text-sm leading-6">
+              Для публикации через ваш аккаунт FlowPost открывает браузер на
+              вашем компьютере. Cookies и сессии площадок хранятся локально и не
+              передаются на сервер.
+            </p>
+
+            <ol className="grid gap-3 text-sm leading-6">
+              {[
+                "Скачайте или запустите FlowPost Agent",
+                "Вставьте код подключения или используйте команду ниже",
+                "Дождитесь открытия браузера",
+                "Войдите в нужную платформу",
+                "Вернитесь в FlowPost",
+              ].map((step, index) => (
+                <li key={step} className="flex gap-3">
+                  <span className="bg-primary/12 text-primary grid size-6 shrink-0 place-items-center rounded-full text-xs font-semibold">
+                    {index + 1}
+                  </span>
+                  <span>{step}</span>
+                </li>
+              ))}
+            </ol>
+
+            {agentConnect ? (
+              <div className="border-border/70 bg-muted/25 space-y-4 rounded-xl border p-4">
+                <div>
+                  <p className="text-sm font-medium">Команда для MVP</p>
+                  <pre className="bg-background/80 text-muted-foreground mt-2 overflow-x-auto rounded-lg p-3 text-xs leading-5">
+                    <code>{agentConnect.command}</code>
+                  </pre>
+                </div>
+                <div>
+                  <p className="text-sm font-medium">Agent token</p>
+                  <pre className="bg-background/80 text-muted-foreground mt-2 overflow-x-auto rounded-lg p-3 text-xs leading-5">
+                    <code>{agentConnect.token}</code>
+                  </pre>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <StatusBadge
+                    tone={
+                      agentConnect.job.status === "completed"
+                        ? "positive"
+                        : agentConnect.job.status === "failed" ||
+                            agentConnect.job.status === "cancelled"
+                          ? "warning"
+                          : "neutral"
+                    }
+                  >
+                    {agentStatusLabels[agentConnect.job.status]}
+                  </StatusBadge>
+                  <span className="text-muted-foreground text-xs">
+                    Job ID: {agentConnect.job.id}
+                  </span>
+                </div>
+              </div>
+            ) : null}
+          </div>
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setSelectedPlatform(null)}
+              onClick={() => {
+                setSelectedPlatform(null);
+                setAgentConnect(null);
+              }}
               disabled={connectingPlatform !== null}
             >
-              Отмена
+              Закрыть
             </Button>
             <Button
               onClick={() => void handleConnect()}
-              disabled={connectingPlatform !== null}
+              disabled={connectingPlatform !== null || agentConnect !== null}
             >
-              {connectingPlatform ? "Ожидание входа..." : "Запустить"}
+              {connectingPlatform ? "Создание задания..." : "Создать задание"}
             </Button>
           </DialogFooter>
         </DialogContent>

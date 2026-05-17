@@ -1,10 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z, ZodError } from "zod";
 
-import {
-  launchPlatformWithSession,
-  PlatformServiceError,
-} from "@/features/platforms/server/platform-service";
 import { auth } from "@/infrastructure/auth/session";
 import { platformSlugs } from "@/infrastructure/platforms/platform-registry";
 import { debugLog, debugWarn } from "@/lib/debug-log";
@@ -27,20 +23,6 @@ function toErrorResponse(error: unknown) {
           }
         : error,
   });
-
-  if (error instanceof PlatformServiceError) {
-    return NextResponse.json(
-      {
-        error: {
-          code: error.code,
-          message: error.message,
-        },
-      },
-      {
-        status: error.statusCode,
-      },
-    );
-  }
 
   if (error instanceof ZodError) {
     return NextResponse.json(
@@ -104,18 +86,24 @@ export async function POST(request: NextRequest) {
       platform: payload.platform,
     });
 
-    const platform = await launchPlatformWithSession(
-      session.user.id,
-      payload.platform,
-    );
-
     debugLog("[api/platforms/launch]", {
-      step: "request:success",
+      step: "local-agent-required",
       userId: session.user.id,
       platform: payload.platform,
     });
 
-    return NextResponse.json({ platform });
+    return NextResponse.json(
+      {
+        error: {
+          code: "LOCAL_AGENT_REQUIRED",
+          message:
+            "Для запуска браузера запустите FlowPost Agent на компьютере пользователя.",
+        },
+      },
+      {
+        status: 409,
+      },
+    );
   } catch (error) {
     return toErrorResponse(error);
   }

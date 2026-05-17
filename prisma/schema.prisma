@@ -132,6 +132,27 @@ enum StrategyArticleTaskStatus {
   WAITING_CONNECTION
 }
 
+enum AgentSessionStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+enum AgentJobType {
+  CONNECT_PLATFORM
+  PUBLISH_ARTICLE
+}
+
+enum AgentJobStatus {
+  QUEUED
+  PICKED_UP
+  RUNNING
+  WAITING_USER_LOGIN
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
 model User {
   id            String     @id @default(cuid())
   email         String     @unique @db.VarChar(320)
@@ -150,6 +171,8 @@ model User {
   articleAssets     ArticleAsset[]    @relation("AssetAuthor")
   contentStrategies ContentStrategy[]
   agentHeartbeats   AgentHeartbeat[]
+  agentSessions     AgentSession[]
+  agentJobs         AgentJob[]
   sessions          Session[]
   accounts          Account[]
   platformAccounts  PlatformAccount[]
@@ -417,6 +440,58 @@ model AgentHeartbeat {
 
   @@unique([userId, deviceId])
   @@index([userId, lastSeenAt])
+}
+
+model AgentSession {
+  id         String             @id @default(cuid())
+  userId     String
+  tokenHash  String             @unique @db.VarChar(128)
+  name       String             @default("FlowPost Local Agent") @db.VarChar(160)
+  status     AgentSessionStatus @default(ACTIVE)
+  createdAt  DateTime           @default(now())
+  lastSeenAt DateTime?
+  revokedAt  DateTime?
+
+  user User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobs AgentJob[]
+
+  @@index([userId, status, lastSeenAt])
+}
+
+model AgentJob {
+  id          String         @id @default(cuid())
+  userId      String
+  sessionId   String?
+  type        AgentJobType
+  platform    String?        @db.VarChar(64)
+  payload     Json
+  status      AgentJobStatus @default(QUEUED)
+  result      Json?
+  error       String?        @db.Text
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session AgentSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  logs    AgentJobLog[]
+
+  @@index([userId, status, createdAt])
+  @@index([sessionId, status, createdAt])
+  @@index([type, status, createdAt])
+}
+
+model AgentJobLog {
+  id        String   @id @default(cuid())
+  jobId     String
+  message   String   @db.Text
+  level     String   @default("info") @db.VarChar(24)
+  createdAt DateTime @default(now())
+
+  job AgentJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, createdAt])
 }
 
 model ArticleVariant {
