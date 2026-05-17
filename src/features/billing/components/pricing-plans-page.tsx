@@ -1,4 +1,10 @@
-import { Check, HelpCircle, Sparkles } from "lucide-react";
+import {
+  Check,
+  CreditCard,
+  HelpCircle,
+  PackageCheck,
+  Sparkles,
+} from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import {
@@ -36,25 +42,26 @@ const faq = [
 export function PricingPlansPage() {
   return (
     <div className="relative mx-auto w-full max-w-[1400px] px-6 py-16 sm:px-8 lg:px-12 lg:py-24">
-      <div className="pointer-events-none absolute inset-x-8 top-10 -z-10 h-72 rounded-full bg-primary/8 blur-3xl" />
+      <div className="bg-primary/8 pointer-events-none absolute inset-x-8 top-10 -z-10 h-72 rounded-full blur-3xl" />
 
       <section className="grid gap-10 lg:grid-cols-[minmax(0,0.95fr)_minmax(360px,0.55fr)] lg:items-end">
         <div>
-          <Badge className="mb-6 bg-primary/12 text-primary">
+          <Badge className="bg-primary/12 text-primary mb-6">
             AI Content Distribution Platform
           </Badge>
-          <h1 className="font-heading max-w-4xl text-5xl font-semibold leading-[0.95] tracking-[-0.06em] sm:text-6xl">
+          <h1 className="font-heading max-w-4xl text-5xl leading-[0.95] font-semibold tracking-[-0.06em] sm:text-6xl">
             Выберите тариф
           </h1>
           <p className="text-muted-foreground mt-6 max-w-4xl text-lg leading-8">
-            Запускайте регулярную публикацию статей на VC.ru и Дзене:
-            генерация, адаптация, автопубликация и аналитика в одном сервисе.
+            Запускайте регулярную публикацию статей на VC.ru и Дзене: генерация,
+            адаптация, автопубликация и аналитика в одном сервисе. Каждый тариф
+            дает электронный SaaS-доступ к FlowPost на 30 календарных дней.
           </p>
         </div>
 
-        <div className="rounded-[2rem] border border-primary/15 bg-primary/10 p-7 shadow-[0_30px_90px_-58px_rgba(83,109,254,0.8)]">
+        <div className="border-primary/15 bg-primary/10 rounded-[2rem] border p-7 shadow-[0_30px_90px_-58px_rgba(83,109,254,0.8)]">
           <div className="flex items-start gap-3">
-            <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-primary/12 text-primary">
+            <span className="bg-primary/12 text-primary grid size-12 shrink-0 place-items-center rounded-2xl">
               <Sparkles className="size-6" />
             </span>
             <div>
@@ -73,9 +80,40 @@ export function PricingPlansPage() {
         ))}
       </section>
 
-      <section className="mt-14 rounded-[2rem] border border-border/30 bg-card/55 p-8 sm:p-10">
+      <section className="mt-14 grid gap-6 lg:grid-cols-2">
+        <InfoCard
+          icon={<PackageCheck className="size-6" />}
+          title="Что входит в оплату"
+        >
+          После оплаты клиент получает доступ к личному кабинету FlowPost на 30
+          календарных дней. Внутри сервиса доступны генерация статей, управление
+          брендами, публикациями и платформами в рамках выбранного тарифа.
+        </InfoCard>
+        <InfoCard
+          icon={<CreditCard className="size-6" />}
+          title="Важная информация"
+        >
+          <ul className="space-y-3">
+            <li>Услуга оказывается дистанционно.</li>
+            <li>Доставка физического товара не осуществляется.</li>
+            <li>
+              Условия возврата описаны на странице{" "}
+              <a
+                href="/refund"
+                className="text-foreground underline-offset-4 hover:underline"
+              >
+                Возврат и отказ от услуги
+              </a>
+              .
+            </li>
+            <li>Оплата проводится через Robokassa.</li>
+          </ul>
+        </InfoCard>
+      </section>
+
+      <section className="border-border/30 bg-card/55 mt-14 rounded-[2rem] border p-8 sm:p-10">
         <div className="mb-8 flex items-center gap-4">
-          <span className="grid size-12 place-items-center rounded-2xl bg-muted text-muted-foreground">
+          <span className="bg-muted text-muted-foreground grid size-12 place-items-center rounded-2xl">
             <HelpCircle className="size-6" />
           </span>
           <h2 className="font-heading text-3xl font-semibold tracking-[-0.04em]">
@@ -84,7 +122,7 @@ export function PricingPlansPage() {
         </div>
         <div className="grid gap-7 md:grid-cols-2">
           {faq.map((item) => (
-            <div key={item.question} className="border-t border-border/30 pt-6">
+            <div key={item.question} className="border-border/30 border-t pt-6">
               <h3 className="text-lg font-semibold">{item.question}</h3>
               <p className="text-muted-foreground mt-3 text-base leading-7">
                 {item.answer}
@@ -103,9 +141,9 @@ function PlanCard({ plan }: { plan: BillingPlan }) {
   return (
     <Card
       className={cn(
-        "relative h-full rounded-[2.25rem] border-border/40 bg-card/76 py-8 transition-all duration-300 hover:-translate-y-1.5 hover:border-border hover:shadow-[0_36px_110px_-56px_rgba(15,23,42,0.78)]",
+        "border-border/40 bg-card/76 hover:border-border relative h-full rounded-[2.25rem] py-8 transition-all duration-300 hover:-translate-y-1.5 hover:shadow-[0_36px_110px_-56px_rgba(15,23,42,0.78)]",
         plan.highlighted &&
-          "border-primary/55 bg-[linear-gradient(180deg,color-mix(in_srgb,var(--color-primary)_12%,var(--color-card)),var(--color-card)_76%)] shadow-[0_40px_130px_-58px_rgba(83,109,254,0.78)] ring-primary/15 lg:scale-[1.025]",
+          "border-primary/55 ring-primary/15 bg-[linear-gradient(180deg,color-mix(in_srgb,var(--color-primary)_12%,var(--color-card)),var(--color-card)_76%)] shadow-[0_40px_130px_-58px_rgba(83,109,254,0.78)] lg:scale-[1.025]",
         isPremium &&
           "bg-[linear-gradient(180deg,color-mix(in_srgb,var(--color-foreground)_8%,var(--color-card)),var(--color-card)_78%)]",
       )}
@@ -148,7 +186,8 @@ function PlanCard({ plan }: { plan: BillingPlan }) {
             <span className="text-muted-foreground pb-2 text-base">/ мес</span>
           </div>
           <p className="text-muted-foreground text-sm leading-6">
-            Цена раннего доступа действует до 1 августа.
+            Цена раннего доступа действует до 1 августа. Доступ предоставляется
+            на 30 календарных дней.
           </p>
         </div>
 
@@ -168,7 +207,7 @@ function PlanCard({ plan }: { plan: BillingPlan }) {
           ))}
         </ul>
 
-        <div className="mt-8 rounded-[1.4rem] bg-muted/35 p-5">
+        <div className="bg-muted/35 mt-8 rounded-[1.4rem] p-5">
           <p className="text-base font-semibold">Поддержка</p>
           <p className="text-muted-foreground mt-2 text-base leading-7">
             {plan.support}
@@ -183,11 +222,35 @@ function PlanCard({ plan }: { plan: BillingPlan }) {
   );
 }
 
+function InfoCard({
+  icon,
+  title,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="border-border/40 bg-card/70 rounded-2xl border p-7">
+      <div className="flex items-center gap-4">
+        <span className="bg-primary/12 text-primary grid size-12 place-items-center rounded-xl">
+          {icon}
+        </span>
+        <h2 className="text-2xl font-semibold tracking-[-0.03em]">{title}</h2>
+      </div>
+      <div className="text-muted-foreground mt-5 text-base leading-7">
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function PlanMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-[1.25rem] bg-muted/35 p-4">
+    <div className="bg-muted/35 rounded-[1.25rem] p-4">
       <p className="text-muted-foreground text-sm">{label}</p>
-      <p className="mt-2 text-base font-semibold leading-6">{value}</p>
+      <p className="mt-2 text-base leading-6 font-semibold">{value}</p>
     </div>
   );
 }

@@ -7,19 +7,25 @@ import { cn } from "@/lib/utils";
 
 export function MarketingHeader() {
   return (
-    <header className="sticky top-0 z-30 border-b border-border/60 bg-background/75 backdrop-blur-xl">
+    <header className="border-border/60 bg-background/75 sticky top-0 z-30 border-b backdrop-blur-xl">
       <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:px-8">
         <Brand />
-        <nav className="hidden items-center gap-6 text-sm text-muted-foreground md:flex">
-          <Link href="/pricing" className="transition-colors hover:text-foreground">
+        <nav className="text-muted-foreground hidden items-center gap-6 text-sm md:flex">
+          <Link
+            href="/pricing"
+            className="hover:text-foreground transition-colors"
+          >
             Тарифы
           </Link>
-          <Link href="/dashboard" className="transition-colors hover:text-foreground">
-            Дашборд
+          <Link
+            href="/contacts"
+            className="hover:text-foreground transition-colors"
+          >
+            Контакты
           </Link>
           <a
             href="#features"
-            className="transition-colors hover:text-foreground"
+            className="hover:text-foreground transition-colors"
           >
             Возможности
           </a>
@@ -28,10 +34,7 @@ export function MarketingHeader() {
           <ThemeToggle />
           <Link
             href="/dashboard"
-            className={cn(
-              buttonVariants({ size: "sm" }),
-              "rounded-full px-4",
-            )}
+            className={cn(buttonVariants({ size: "sm" }), "rounded-full px-4")}
           >
             Открыть продукт
           </Link>
