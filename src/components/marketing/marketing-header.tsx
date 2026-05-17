@@ -34,7 +34,10 @@ export function MarketingHeader() {
           <ThemeToggle />
           <Link
             href="/dashboard"
-            className={cn(buttonVariants({ size: "sm" }), "rounded-full px-4")}
+            className={cn(
+              buttonVariants({ size: "sm" }),
+              "hidden rounded-full px-4 sm:inline-flex",
+            )}
           >
             Открыть продукт
           </Link>
