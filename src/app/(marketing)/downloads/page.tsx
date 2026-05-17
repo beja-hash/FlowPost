@@ -8,6 +8,9 @@ export const metadata = {
 };
 
 export default function DownloadsPage() {
+  const macDownloadUrl = process.env.NEXT_PUBLIC_AGENT_MAC_DOWNLOAD_URL;
+  const windowsDownloadUrl = process.env.NEXT_PUBLIC_AGENT_WINDOWS_DOWNLOAD_URL;
+
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-14 sm:px-6 lg:px-8 lg:py-20">
       <p className="text-primary text-sm font-medium uppercase">
@@ -24,13 +27,13 @@ export default function DownloadsPage() {
 
       <div className="mt-10 grid gap-5 sm:grid-cols-2">
         <DownloadCard
-          title="macOS"
-          href="/downloads/flowpost-agent-mac.dmg"
-          file="flowpost-agent-mac.dmg"
+          title="macOS Apple Silicon"
+          href={macDownloadUrl}
+          file="FlowPost Agent 0.1.0 arm64 DMG для M1/M2/M3/M4"
         />
         <DownloadCard
           title="Windows"
-          href="/downloads/flowpost-agent-windows.exe"
+          href={windowsDownloadUrl}
           file="flowpost-agent-windows.exe"
         />
       </div>
@@ -70,18 +73,32 @@ function DownloadCard({
   file,
 }: {
   title: string;
-  href: string;
+  href?: string;
   file: string;
 }) {
   return (
     <div className="border-border/70 bg-card/70 rounded-2xl border p-6">
       <h2 className="text-2xl font-semibold">{title}</h2>
       <p className="text-muted-foreground mt-3 text-sm leading-6">
-        Ссылка подготовлена под release-артефакт: {file}
+        {href
+          ? `Ссылка подготовлена под release-артефакт: ${file}`
+          : `Скоро: ${file}`}
       </p>
-      <Link href={href} className={cn(buttonVariants(), "mt-5")}>
-        Скачать
-      </Link>
+      {href ? (
+        <Link href={href} className={cn(buttonVariants(), "mt-5")}>
+          Скачать
+        </Link>
+      ) : (
+        <span
+          className={cn(
+            buttonVariants({ variant: "secondary" }),
+            "mt-5 cursor-not-allowed opacity-60",
+          )}
+          aria-disabled="true"
+        >
+          Скоро
+        </span>
+      )}
     </div>
   );
 }

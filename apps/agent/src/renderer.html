@@ -30,6 +30,9 @@
         </label>
         <button id="pairButton">Подключить</button>
         <p id="status" class="muted"></p>
+        <button id="prepareBrowser" class="secondary">
+          Повторить подготовку браузера
+        </button>
       </section>
 
       <section class="card trust">
@@ -45,6 +48,9 @@
           <li>Cookies и сессии хранятся локально в профиле Agent.</li>
           <li>
             FlowPost получает только технические статусы выполнения задач.
+          </li>
+          <li>
+            Вы можете отключить Agent и удалить локальный профиль браузера.
           </li>
           <li>
             Agent работает только после подключения через одноразовый код.
@@ -78,6 +84,7 @@
       <section class="card">
         <h2>Безопасность и локальные данные</h2>
         <p>Профиль браузера FlowPost: <code id="profileRoot"></code></p>
+        <p>Браузер Playwright: <code id="browserCachePath"></code></p>
         <p>
           Статус подключения:
           <strong id="connectionStatus">disconnected</strong>

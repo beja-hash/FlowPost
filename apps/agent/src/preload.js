@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("flowPostAgent", {
   getState: () => ipcRenderer.invoke("agent:get-state"),
+  prepareBrowser: () => ipcRenderer.invoke("agent:prepare-browser"),
   pair: (payload) => ipcRenderer.invoke("agent:pair", payload),
   disconnect: () => ipcRenderer.invoke("agent:disconnect"),
   deleteProfiles: () => ipcRenderer.invoke("agent:delete-profiles"),

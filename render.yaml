@@ -3,7 +3,7 @@ services:
     name: posting-web
     runtime: node
     plan: starter
-    buildCommand: npm ci && npx prisma generate && npm run build
+    buildCommand: npm ci && npx prisma generate && npx prisma migrate deploy && npm run build
     startCommand: npm run start
     envVars:
       - key: NODE_ENV
@@ -28,6 +28,12 @@ services:
         generateValue: true
       - key: STRATEGY_CATCH_UP_WINDOW_HOURS
         value: "72"
+      - key: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD
+        value: "1"
+      - key: NEXT_PUBLIC_AGENT_MAC_DOWNLOAD_URL
+        sync: false
+      - key: NEXT_PUBLIC_AGENT_WINDOWS_DOWNLOAD_URL
+        sync: false
 
 databases:
   - name: posting-postgres

@@ -5,13 +5,27 @@
   "main": "src/main.js",
   "description": "FlowPost Desktop Agent",
   "author": "FlowPost",
+  "scripts": {
+    "dev": "electron .",
+    "build:mac": "electron-builder --mac dmg",
+    "build:mac:arm64": "electron-builder --mac dmg --arm64",
+    "build:mac:x64": "electron-builder --mac dmg --x64",
+    "build:mac:universal": "electron-builder --mac dmg --universal",
+    "build:win": "electron-builder --win nsis",
+    "build": "electron-builder"
+  },
+  "dependencies": {
+    "playwright": "^1.59.1"
+  },
   "build": {
     "appId": "com.flowpost.agent",
     "electronVersion": "39.8.10",
     "productName": "FlowPost Agent",
     "files": [
       "src/**/*",
-      "package.json"
+      "package.json",
+      "node_modules/playwright/**/*",
+      "node_modules/playwright-core/**/*"
     ],
     "mac": {
       "target": "dmg"

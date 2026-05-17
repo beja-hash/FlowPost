@@ -121,8 +121,10 @@ function hoursSince(date: Date, now = new Date()) {
 }
 
 async function publishArticleWithBrowserSession(userId: string, articleId: string) {
-  const { publishArticleForUser } = await import("@/services/article-workflow");
-  return publishArticleForUser(userId, articleId);
+  const { createPublishArticleJob } = await import(
+    "@/features/agent/server/agent-service"
+  );
+  return createPublishArticleJob({ userId, articleId });
 }
 
 function normalizeOptional(value?: string | null) {

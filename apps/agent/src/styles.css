@@ -83,6 +83,10 @@ button.danger {
   background: #fecaca;
 }
 
+button.secondary {
+  background: #dbeafe;
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;

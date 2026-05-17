@@ -1,7 +1,9 @@
-const { app, BrowserWindow, ipcMain, session, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
+
+const { createAutomationRunner } = require("./automation-runner");
 
 const APP_VERSION = "0.1.0";
 const DEFAULT_API_URL = "https://flowpost-3yxb.onrender.com";
@@ -9,15 +11,10 @@ const settingsPath = path.join(app.getPath("userData"), "settings.json");
 let mainWindow;
 let settings = {};
 let pollingTimer;
-let loginWindow;
+let runner;
 
 function browserDataRoot() {
-  return app.getPath("userData");
-}
-
-function browserPartition(platform) {
-  const safePlatform = String(platform || "default").replace(/[^a-z0-9_-]/gi, "");
-  return `persist:flowpost-${safePlatform || "default"}`;
+  return runner?.profileRoot || path.join(app.getPath("appData"), "FlowPost", "browser-profiles");
 }
 
 async function readSettings() {
@@ -45,6 +42,7 @@ function sendState(extra = {}) {
     connected: Boolean(settings.agentToken),
     account: settings.account ?? null,
     profileRoot: browserDataRoot(),
+    browserCachePath: runner?.browserCachePath,
     platform: os.platform(),
     appVersion: APP_VERSION,
     ...extra,
@@ -93,105 +91,22 @@ async function logJob(jobId, message, level = "info") {
   }
 }
 
-async function installFinishButton(window) {
-  await window.webContents
-    .executeJavaScript(
-      `
-      (() => {
-        if (document.getElementById("__flowpost_agent_finish")) return;
-        const button = document.createElement("button");
-        button.id = "__flowpost_agent_finish";
-        button.type = "button";
-        button.textContent = "Готово: сохранить подключение";
-        Object.assign(button.style, {
-          position: "fixed",
-          right: "20px",
-          bottom: "20px",
-          zIndex: "2147483647",
-          border: "0",
-          borderRadius: "999px",
-          padding: "12px 18px",
-          background: "#111827",
-          color: "#fff",
-          font: "600 14px system-ui, sans-serif",
-          boxShadow: "0 18px 50px rgba(0,0,0,.32)",
-          cursor: "pointer",
-        });
-        button.addEventListener("click", () => {
-          window.flowPostAgentBrowser?.finish?.();
-        });
-        document.documentElement.appendChild(button);
-      })();
-      `,
-      true,
-    )
-    .catch(() => undefined);
+async function runConnectPlatformJob(job) {
+  await runner.runConnectPlatformJob(job, updateJobStatus);
 }
 
-async function runConnectPlatformJob(job) {
-  const platform = job.platform || job.payload?.platform;
-  const connectUrl = job.payload?.connectUrl;
-
-  if (!platform || !connectUrl) {
-    throw new Error("Задание подключения повреждено.");
-  }
-
-  await updateJobStatus(job.id, "running");
-  sendState({ status: "browser_opening" });
-
-  if (loginWindow) {
-    loginWindow.close();
-    loginWindow = null;
-  }
-
-  loginWindow = new BrowserWindow({
-    width: 1280,
-    height: 900,
-    title: `FlowPost: ${platform}`,
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      partition: browserPartition(platform),
-      preload: path.join(__dirname, "browser-preload.js"),
-    },
-  });
-
-  loginWindow.webContents.on("did-finish-load", () => {
-    if (loginWindow) void installFinishButton(loginWindow);
-  });
-
-  const finished = new Promise((resolve) => {
-    const finish = () => resolve("completed");
-    ipcMain.once("agent:browser-finish", finish);
-    loginWindow?.once("closed", () => {
-      ipcMain.off("agent:browser-finish", finish);
-      resolve("closed");
-    });
-  });
-
-  await loginWindow.loadURL(connectUrl);
-  await installFinishButton(loginWindow);
-  await updateJobStatus(job.id, "waiting_user_login");
-  await logJob(job.id, "Браузер открыт локально. Ожидаем вход пользователя.");
-  sendState({ status: "browser_opened" });
-
-  const outcome = await finished;
-  if (outcome !== "completed") {
-    throw new Error("Браузер закрыт до подтверждения подключения.");
-  }
-
-  await updateJobStatus(job.id, "completed", {
-    result: { platform, cookiesStoredLocally: true },
-  });
-  await logJob(job.id, "Подключение завершено. Cookies остались локально.");
-  loginWindow.close();
-  loginWindow = null;
-  sendState({ status: "connected" });
+async function runPublishArticleJob(job) {
+  await runner.runPublishArticleJob(job, updateJobStatus);
 }
 
 async function handleJob(job) {
   if (job.type === "connect_platform") {
     await runConnectPlatformJob(job);
+    return;
+  }
+
+  if (job.type === "publish_article") {
+    await runPublishArticleJob(job);
     return;
   }
 
@@ -208,7 +123,17 @@ async function pollJobs() {
     const { job } = await api("/api/agent/jobs/next");
     if (!job) return;
     sendState({ status: "job_received" });
-    await handleJob(job);
+    try {
+      await handleJob(job);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Неизвестная ошибка Agent.";
+      await updateJobStatus(job.id, "failed", { error: message }).catch(
+        () => undefined,
+      );
+      await logJob(job.id, message, "error");
+      throw error;
+    }
   } catch (error) {
     sendState({
       status: "error",
@@ -243,9 +168,15 @@ ipcMain.handle("agent:get-state", async () => {
     connected: Boolean(settings.agentToken),
     account: settings.account ?? null,
     profileRoot: browserDataRoot(),
+    browserCachePath: runner?.browserCachePath,
     platform: os.platform(),
     appVersion: APP_VERSION,
   };
+});
+
+ipcMain.handle("agent:prepare-browser", async () => {
+  await runner.ensureChromium();
+  return true;
 });
 
 ipcMain.handle("agent:pair", async (_event, payload) => {
@@ -274,16 +205,7 @@ ipcMain.handle("agent:disconnect", async () => {
 });
 
 ipcMain.handle("agent:delete-profiles", async () => {
-  if (loginWindow) {
-    loginWindow.close();
-    loginWindow = null;
-  }
-  const partitions = ["dzen", "vc", "default"].map(browserPartition);
-  await Promise.all(
-    partitions.map((partition) =>
-      session.fromPartition(partition).clearStorageData(),
-    ),
-  );
+  await runner.deleteProfiles();
   sendState({ status: "profiles_deleted" });
   return true;
 });
@@ -294,6 +216,7 @@ ipcMain.handle("agent:open-profiles", async () => {
 });
 
 app.whenReady().then(async () => {
+  runner = createAutomationRunner({ app, sendState, logJob });
   await readSettings();
   createWindow();
   mainWindow.webContents.once("did-finish-load", () => {

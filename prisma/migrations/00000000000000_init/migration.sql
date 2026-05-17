@@ -1,0 +1,3 @@
+-- Baseline migration for databases that were created before Prisma migrations.
+-- Existing production databases should be baselined with this migration before
+-- applying subsequent migrations. It intentionally does not create or drop data.

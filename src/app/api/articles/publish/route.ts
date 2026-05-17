@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z, ZodError } from "zod";
 
-import { ArticleWorkflowError } from "@/services/article-workflow-error";
+import {
+  AgentServiceError,
+  createPublishArticleJob,
+} from "@/features/agent/server/agent-service";
 import { auth } from "@/infrastructure/auth/session";
 
 export const runtime = "nodejs";
@@ -20,7 +23,7 @@ function toErrorResponse(error: unknown) {
         : error,
   });
 
-  if (error instanceof ArticleWorkflowError) {
+  if (error instanceof AgentServiceError) {
     return NextResponse.json(
       { error: { code: error.code, message: error.message } },
       { status: error.statusCode },
@@ -62,10 +65,15 @@ export async function POST(request: NextRequest) {
     }
 
     const payload = publishSchema.parse(await request.json());
-    const { publishArticleForUser } = await import("@/services/article-workflow");
-    const result = await publishArticleForUser(session.user.id, payload.articleId);
+    const result = await createPublishArticleJob({
+      userId: session.user.id,
+      articleId: payload.articleId,
+    });
 
-    return NextResponse.json(result);
+    return NextResponse.json({
+      mode: "desktop_agent",
+      ...result,
+    });
   } catch (error) {
     return toErrorResponse(error);
   }

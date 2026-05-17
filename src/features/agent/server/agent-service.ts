@@ -1,10 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import {
+  AssetStatus,
   AgentDeviceStatus,
   AgentJobStatus,
   AgentJobType,
   PlatformAccountStatus,
+  PublicationStatus,
+  VariantStatus,
   type AgentDevice,
   type AgentJob,
 } from "@prisma/client";
@@ -14,6 +17,7 @@ import {
   getPlatformConfig,
   type PlatformSlug,
 } from "@/infrastructure/platforms/platform-registry";
+import { formatArticleForPlatform } from "@/services/article-formatting";
 
 const TOKEN_PREFIX = "fp_agent_";
 const PAIRING_TTL_MINUTES = 15;
@@ -285,6 +289,142 @@ export async function createConnectPlatformJob({
   };
 }
 
+export async function createPublishArticleJob({
+  userId,
+  articleId,
+}: {
+  userId: string;
+  articleId: string;
+}) {
+  const article = await prisma.articleAsset.findFirst({
+    where: {
+      id: articleId,
+      workspace: {
+        members: {
+          some: { userId },
+        },
+      },
+      status: {
+        not: AssetStatus.ARCHIVED,
+      },
+    },
+    include: {
+      variants: {
+        include: {
+          platform: true,
+        },
+        take: 1,
+      },
+      publications: {
+        take: 1,
+        orderBy: {
+          createdAt: "desc",
+        },
+      },
+    },
+  });
+
+  const variant = article?.variants[0];
+  const publication = article?.publications[0];
+
+  if (!article || !variant || !publication) {
+    throw new AgentServiceError(
+      404,
+      "ARTICLE_NOT_FOUND",
+      "Статья для публикации не найдена.",
+    );
+  }
+
+  const config = getPlatformConfig(variant.platform.slug);
+
+  if (!config) {
+    throw new AgentServiceError(
+      400,
+      "INVALID_PLATFORM",
+      "Эта площадка не поддерживается.",
+    );
+  }
+
+  const account = await prisma.platformAccount.findUnique({
+    where: {
+      userId_platform: {
+        userId,
+        platform: config.slug,
+      },
+    },
+  });
+
+  if (account?.status !== PlatformAccountStatus.CONNECTED) {
+    throw new AgentServiceError(
+      409,
+      "PLATFORM_NOT_CONNECTED",
+      "Сначала подключите площадку через FlowPost Agent.",
+    );
+  }
+
+  const activeDevice = await hasActiveAgentDevice(userId);
+
+  if (!activeDevice) {
+    return {
+      status: "requires_agent" as const,
+      message:
+        "Установите FlowPost Agent, чтобы открыть браузер на вашем компьютере.",
+      agentDevice: null,
+      job: null,
+    };
+  }
+
+  const body = formatArticleForPlatform(article.canonicalBody, config.slug);
+  const job = await prisma.$transaction(async (tx) => {
+    await tx.articleAsset.update({
+      where: { id: article.id },
+      data: {
+        status: AssetStatus.DISTRIBUTING,
+        variants: {
+          update: {
+            where: { id: variant.id },
+            data: { status: VariantStatus.APPROVED },
+          },
+        },
+        publications: {
+          update: {
+            where: { id: publication.id },
+            data: { status: PublicationStatus.SCHEDULED, lastError: null },
+          },
+        },
+      },
+    });
+
+    return tx.agentJob.create({
+      data: {
+        userId,
+        agentDeviceId: activeDevice.id,
+        type: AgentJobType.PUBLISH_ARTICLE,
+        platform: config.slug,
+        payload: {
+          articleId: article.id,
+          platform: config.slug,
+          platformName: config.name,
+          editorUrl: config.editorUrl,
+          title: article.title,
+          body,
+          ctaText: article.ctaText,
+          ctaUrl: article.ctaUrl,
+        },
+        status: AgentJobStatus.QUEUED,
+      },
+    });
+  });
+
+  return {
+    status: "queued" as const,
+    message:
+      "Задание публикации создано. FlowPost Agent откроет браузер на вашем компьютере.",
+    agentDevice: publicAgentDevice(activeDevice),
+    job: publicAgentJob(job),
+  };
+}
+
 export async function getNextAgentJob(authorization: string | null) {
   const device = await authenticateAgent(authorization);
 
@@ -415,6 +555,76 @@ export async function updateAgentJobStatus({
         sessionPath: `flowpost-agent:${device.id}:${updatedJob.platform}`,
       },
     });
+  }
+
+  if (
+    updatedJob.type === AgentJobType.PUBLISH_ARTICLE &&
+    updatedJob.status === AgentJobStatus.COMPLETED
+  ) {
+    const payload = updatedJob.payload as {
+      articleId?: string;
+    };
+    const resultPayload = updatedJob.result as {
+      publishedUrl?: string;
+    } | null;
+
+    if (payload.articleId) {
+      await prisma.articleAsset.update({
+        where: { id: payload.articleId },
+        data: {
+          status: AssetStatus.PUBLISHED,
+          variants: {
+            updateMany: {
+              where: {},
+              data: { status: VariantStatus.PUBLISHED },
+            },
+          },
+          publications: {
+            updateMany: {
+              where: {},
+              data: {
+                status: PublicationStatus.PUBLISHED,
+                publishedAt: now,
+                externalUrl: resultPayload?.publishedUrl ?? null,
+                lastError: null,
+              },
+            },
+          },
+        },
+      });
+    }
+  }
+
+  if (
+    updatedJob.type === AgentJobType.PUBLISH_ARTICLE &&
+    updatedJob.status === AgentJobStatus.FAILED
+  ) {
+    const payload = updatedJob.payload as {
+      articleId?: string;
+    };
+
+    if (payload.articleId) {
+      await prisma.articleAsset.update({
+        where: { id: payload.articleId },
+        data: {
+          variants: {
+            updateMany: {
+              where: {},
+              data: { status: VariantStatus.FAILED },
+            },
+          },
+          publications: {
+            updateMany: {
+              where: {},
+              data: {
+                status: PublicationStatus.FAILED,
+                lastError: updatedJob.error ?? "Publish failed in Agent.",
+              },
+            },
+          },
+        },
+      });
+    }
   }
 
   return publicAgentJob(updatedJob);
