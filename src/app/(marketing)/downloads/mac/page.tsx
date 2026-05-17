@@ -2,14 +2,17 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 
 import { buttonVariants } from "@/components/ui/button";
+import { PairingCodeCard } from "@/features/agent/components/pairing-code-card";
+import { auth } from "@/infrastructure/auth/session";
 import { cn } from "@/lib/utils";
 
 export const metadata = {
   title: "FlowPost Agent для macOS",
 };
 
-export default function MacDownloadsPage() {
+export default async function MacDownloadsPage() {
   const downloadUrl = process.env.NEXT_PUBLIC_AGENT_MAC_DOWNLOAD_URL;
+  const session = await auth();
 
   return (
     <DownloadGuide
@@ -31,6 +34,7 @@ export default function MacDownloadsPage() {
       downloadUrl={downloadUrl}
       downloadLabel="Скачать FlowPost Agent для macOS"
       unavailableLabel="Сборка для macOS скоро будет доступна"
+      isAuthenticated={Boolean(session?.user?.id)}
     />
   );
 }
@@ -47,6 +51,7 @@ function DownloadGuide({
   downloadUrl,
   downloadLabel,
   unavailableLabel,
+  isAuthenticated,
 }: {
   title: string;
   intro: string;
@@ -59,6 +64,7 @@ function DownloadGuide({
   downloadUrl?: string;
   downloadLabel: string;
   unavailableLabel: string;
+  isAuthenticated: boolean;
 }) {
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-14 sm:px-6 lg:px-8 lg:py-20">
@@ -102,6 +108,8 @@ function DownloadGuide({
         </Section>
 
         <TrustSection />
+
+        <PairingCodeCard isAuthenticated={isAuthenticated} />
 
         <details className="border-border/70 bg-card/70 rounded-2xl border p-6">
           <summary className="cursor-pointer text-2xl font-semibold">

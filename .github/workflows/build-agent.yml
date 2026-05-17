@@ -1,0 +1,72 @@
+name: Build FlowPost Agent
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "agent-v*"
+
+jobs:
+  mac:
+    name: macOS ${{ matrix.arch }}
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install web dependencies
+        run: npm ci
+
+      - name: Install agent dependencies
+        run: npm ci
+        working-directory: apps/agent
+
+      - name: Build macOS Agent
+        run: npm run agent:build:mac:${{ matrix.arch }}
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlowPost-Agent-mac-${{ matrix.arch }}
+          path: apps/agent/dist/FlowPost-Agent-*.dmg
+          if-no-files-found: error
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install web dependencies
+        run: npm ci
+
+      - name: Install agent dependencies
+        run: npm ci
+        working-directory: apps/agent
+
+      - name: Build Windows Agent
+        run: npm run agent:build:win
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlowPost-Agent-windows
+          path: apps/agent/dist/FlowPost-Agent-*-win.exe
+          if-no-files-found: error

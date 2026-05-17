@@ -2,14 +2,17 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 
 import { buttonVariants } from "@/components/ui/button";
+import { PairingCodeCard } from "@/features/agent/components/pairing-code-card";
+import { auth } from "@/infrastructure/auth/session";
 import { cn } from "@/lib/utils";
 
 export const metadata = {
   title: "FlowPost Agent для Windows",
 };
 
-export default function WindowsDownloadsPage() {
+export default async function WindowsDownloadsPage() {
   const downloadUrl = process.env.NEXT_PUBLIC_AGENT_WINDOWS_DOWNLOAD_URL;
+  const session = await auth();
 
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-14 sm:px-6 lg:px-8 lg:py-20">
@@ -59,6 +62,8 @@ export default function WindowsDownloadsPage() {
         </Section>
 
         <TrustSection />
+
+        <PairingCodeCard isAuthenticated={Boolean(session?.user?.id)} />
 
         <details className="border-border/70 bg-card/70 rounded-2xl border p-6">
           <summary className="cursor-pointer text-2xl font-semibold">

@@ -11,7 +11,7 @@
     "build:mac:arm64": "electron-builder --mac dmg --arm64",
     "build:mac:x64": "electron-builder --mac dmg --x64",
     "build:mac:universal": "electron-builder --mac dmg --universal",
-    "build:win": "electron-builder --win nsis",
+    "build:win": "electron-builder --win nsis --x64",
     "build": "electron-builder"
   },
   "dependencies": {
@@ -21,17 +21,24 @@
     "appId": "com.flowpost.agent",
     "electronVersion": "39.8.10",
     "productName": "FlowPost Agent",
+    "artifactName": "FlowPost-Agent-${version}-${arch}.${ext}",
     "files": [
       "src/**/*",
       "package.json",
       "node_modules/playwright/**/*",
       "node_modules/playwright-core/**/*"
     ],
+    "asarUnpack": [
+      "node_modules/playwright/**/*",
+      "node_modules/playwright-core/**/*"
+    ],
     "mac": {
-      "target": "dmg"
+      "target": "dmg",
+      "artifactName": "FlowPost-Agent-${version}-${arch}.${ext}"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "artifactName": "FlowPost-Agent-${version}-win.${ext}"
     }
   }
 }

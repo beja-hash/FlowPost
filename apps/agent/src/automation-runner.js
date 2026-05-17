@@ -18,6 +18,8 @@ function createAutomationRunner({ app, sendState, logJob }) {
   const browserCachePath = path.join(flowPostDataPath, "ms-playwright");
   const profileRoot = path.join(flowPostDataPath, "browser-profiles");
 
+  process.env.PLAYWRIGHT_BROWSERS_PATH = browserCachePath;
+
   function profilePath(platform) {
     return path.join(profileRoot, normalizePlatform(platform));
   }

@@ -14,7 +14,7 @@
     "agent:build:mac:arm64": "electron-builder --projectDir apps/agent --mac dmg --arm64",
     "agent:build:mac:x64": "electron-builder --projectDir apps/agent --mac dmg --x64",
     "agent:build:mac:universal": "electron-builder --projectDir apps/agent --mac dmg --universal",
-    "agent:build:win": "electron-builder --projectDir apps/agent --win nsis",
+    "agent:build:win": "electron-builder --projectDir apps/agent --win nsis --x64",
     "build": "next build",
     "start": "next start",
     "lint": "eslint . --max-warnings=0",

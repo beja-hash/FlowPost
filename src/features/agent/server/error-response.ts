@@ -47,7 +47,8 @@ export function toAgentErrorResponse(error: unknown) {
     {
       error: {
         code: "INTERNAL_SERVER_ERROR",
-        message: "Не удалось обработать запрос агента.",
+        message:
+          "Не удалось выполнить запрос Agent. Попробуйте еще раз или напишите в поддержку.",
       },
     },
     {

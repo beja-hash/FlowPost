@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 
 import { createPairingCodeForUser } from "@/features/agent/server/agent-service";
-import { toAgentErrorResponse } from "@/features/agent/server/error-response";
 import { auth } from "@/infrastructure/auth/session";
 
 export const runtime = "nodejs";
@@ -14,10 +13,9 @@ export async function POST() {
     if (!session?.user?.id) {
       return NextResponse.json(
         {
-          error: {
-            code: "UNAUTHORIZED",
-            message: "Требуется авторизация.",
-          },
+          ok: false,
+          error: "UNAUTHORIZED",
+          message: "Войдите в аккаунт, чтобы создать код подключения.",
         },
         {
           status: 401,
@@ -27,8 +25,71 @@ export async function POST() {
 
     const pairing = await createPairingCodeForUser(session.user.id);
 
-    return NextResponse.json({ pairing });
+    return NextResponse.json({
+      ok: true,
+      code: pairing.code,
+      expiresAt: pairing.expiresAt,
+      pairing,
+    });
   } catch (error) {
-    return toAgentErrorResponse(error);
+    console.error("[api/agent/pairing/create:error]", {
+      error:
+        error instanceof Error
+          ? {
+              name: error.name,
+              message: error.message,
+              stack: error.stack,
+            }
+          : error,
+    });
+
+    if (isMissingAgentTableError(error)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "DATABASE_ERROR",
+          message:
+            "Сервис подключения Agent еще не подготовлен. Проверьте миграции базы данных.",
+        },
+        {
+          status: 500,
+        },
+      );
+    }
+
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "INTERNAL_ERROR",
+        message:
+          "Не удалось создать код подключения. Попробуйте еще раз или напишите в поддержку.",
+      },
+      {
+        status: 500,
+      },
+    );
   }
+}
+
+function isMissingAgentTableError(error: unknown) {
+  const maybeError = error as {
+    code?: string;
+    message?: string;
+    meta?: {
+      modelName?: string;
+      table?: string;
+    };
+  };
+  const message = maybeError.message ?? "";
+  const table = maybeError.meta?.table ?? "";
+  const modelName = maybeError.meta?.modelName ?? "";
+
+  return (
+    maybeError.code === "P2021" ||
+    maybeError.code === "P2022" ||
+    table.includes("Agent") ||
+    modelName.includes("Agent") ||
+    message.includes("AgentPairingCode") ||
+    message.includes("does not exist")
+  );
 }

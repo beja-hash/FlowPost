@@ -66,11 +66,6 @@ type AgentDevice = {
   lastSeenAt: string | null;
 };
 
-type PairingState = {
-  code: string;
-  expiresAt: string;
-};
-
 type AgentConnectState = {
   job: AgentJob;
 };
@@ -101,9 +96,7 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
   const [agentConnect, setAgentConnect] = useState<AgentConnectState | null>(
     null,
   );
-  const [pairing, setPairing] = useState<PairingState | null>(null);
   const [agentDevices, setAgentDevices] = useState<AgentDevice[]>([]);
-  const [creatingPairing, setCreatingPairing] = useState(false);
 
   async function refreshAgentDevices() {
     try {
@@ -117,37 +110,6 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
       }
     } catch (error) {
       console.error("[platform-agent-devices]", error);
-    }
-  }
-
-  async function createPairingCode() {
-    setCreatingPairing(true);
-
-    try {
-      const response = await fetch("/api/agent/pairing/create", {
-        method: "POST",
-      });
-      const body = (await response.json()) as {
-        pairing?: PairingState;
-        error?: {
-          message?: string;
-        };
-      };
-
-      if (!response.ok || !body.pairing) {
-        throw new Error(body.error?.message ?? "Не удалось создать код.");
-      }
-
-      setPairing(body.pairing);
-      toast.info("Код подключения создан.");
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "Не удалось создать код подключения.",
-      );
-    } finally {
-      setCreatingPairing(false);
     }
   }
 
@@ -366,6 +328,8 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
     }
   }
 
+  const activeAgent = agentDevices[0] ?? null;
+
   return (
     <div className="space-y-5">
       <div>
@@ -414,7 +378,6 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
           if (!open) {
             setSelectedPlatform(null);
             setAgentConnect(null);
-            setPairing(null);
           }
         }}
       >
@@ -428,13 +391,15 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-5">
-            <p className="text-muted-foreground text-sm leading-6">
-              FlowPost Agent запускает браузер локально на вашем устройстве.
-              Сессии площадок, cookies и авторизация в Dzen/VC.ru хранятся в
-              локальном профиле браузера и не передаются на сервер FlowPost.
-              Сервер получает только статус выполнения задачи: браузер открыт,
-              публикация запущена, завершена или произошла ошибка.
-            </p>
+            <div className="border-border/70 bg-muted/25 rounded-xl border p-4">
+              <h3 className="text-base font-semibold">
+                Для публикации нужен FlowPost Agent
+              </h3>
+              <p className="text-muted-foreground mt-2 text-sm leading-6">
+                Agent открывает отдельный браузер на вашем компьютере и
+                помогает подключать площадки для публикации.
+              </p>
+            </div>
 
             <div className="border-border/70 bg-muted/25 grid gap-4 rounded-xl border p-4 text-sm leading-6 md:grid-cols-2">
               <div>
@@ -461,8 +426,8 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
 
             <ol className="grid gap-3 text-sm leading-6">
               {[
-                "Установите FlowPost Agent",
-                "Введите код подключения",
+                "Скачайте FlowPost Agent",
+                "Создайте код подключения на странице скачивания",
                 "Дождитесь открытия браузера",
                 "Войдите в нужную платформу",
                 "Вернитесь в FlowPost",
@@ -491,51 +456,19 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
               </a>
             </div>
             <p className="text-muted-foreground text-xs">
-              Сначала откроется короткая инструкция по установке и первому
-              запуску.
+              На странице скачивания будет инструкция и код подключения.
             </p>
-
-            <div className="border-border/70 bg-muted/25 rounded-xl border p-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium">Код подключения</p>
-                  <p className="text-muted-foreground mt-1 text-xs">
-                    Одноразовый код действует 15 минут.
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void createPairingCode()}
-                  disabled={creatingPairing}
-                >
-                  {creatingPairing ? "Создание..." : "Создать код"}
-                </Button>
-              </div>
-              {pairing ? (
-                <div className="bg-background/80 mt-4 rounded-lg p-4">
-                  <p className="font-mono text-2xl font-semibold tracking-[0.18em]">
-                    {pairing.code}
-                  </p>
-                  <p className="text-muted-foreground mt-2 text-xs">
-                    Истекает: {new Date(pairing.expiresAt).toLocaleString()}
-                  </p>
-                </div>
-              ) : null}
-            </div>
 
             <div className="flex flex-wrap items-center gap-3">
               <StatusBadge
                 tone={agentDevices.length > 0 ? "positive" : "neutral"}
               >
-                {agentDevices.length > 0
-                  ? "Agent подключен. Можно открыть браузер."
-                  : "Agent не подключен"}
+                {activeAgent ? "Agent подключен" : "Agent не подключен"}
               </StatusBadge>
               <span className="text-muted-foreground text-xs">
-                Чтобы открыть браузер на вашем компьютере, установите FlowPost
-                Agent.
+                {activeAgent?.lastSeenAt
+                  ? `Последняя активность: ${new Date(activeAgent.lastSeenAt).toLocaleString()}`
+                  : "Чтобы открыть браузер на вашем компьютере, установите FlowPost Agent."}
               </span>
             </div>
 
@@ -569,7 +502,6 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
               onClick={() => {
                 setSelectedPlatform(null);
                 setAgentConnect(null);
-                setPairing(null);
               }}
               disabled={connectingPlatform !== null}
             >
