@@ -37,9 +37,6 @@ const statusLabels: Record<PlatformConnection["status"], string> = {
   expired: "требует входа",
 };
 
-const macDownloadUrl = process.env.NEXT_PUBLIC_AGENT_MAC_DOWNLOAD_URL;
-const windowsDownloadUrl = process.env.NEXT_PUBLIC_AGENT_WINDOWS_DOWNLOAD_URL;
-
 type PlatformsManagerProps = {
   initialPlatforms: PlatformConnection[];
 };
@@ -480,31 +477,23 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
             </ol>
 
             <div className="grid gap-3 sm:grid-cols-2">
-              {macDownloadUrl ? (
-                <a
-                  href={macDownloadUrl}
-                  className="border-border/70 bg-muted/25 hover:bg-muted/40 rounded-xl border p-4 text-sm font-medium transition-colors"
-                >
-                  Скачать для macOS Apple Silicon
-                </a>
-              ) : (
-                <span className="border-border/70 bg-muted/25 text-muted-foreground rounded-xl border p-4 text-sm font-medium">
-                  macOS: скоро
-                </span>
-              )}
-              {windowsDownloadUrl ? (
-                <a
-                  href={windowsDownloadUrl}
-                  className="border-border/70 bg-muted/25 hover:bg-muted/40 rounded-xl border p-4 text-sm font-medium transition-colors"
-                >
-                  Скачать для Windows
-                </a>
-              ) : (
-                <span className="border-border/70 bg-muted/25 text-muted-foreground rounded-xl border p-4 text-sm font-medium">
-                  Windows: скоро
-                </span>
-              )}
+              <a
+                href="/downloads/mac"
+                className="border-border/70 bg-muted/25 hover:bg-muted/40 rounded-xl border p-4 text-sm font-medium transition-colors"
+              >
+                Скачать для macOS
+              </a>
+              <a
+                href="/downloads/windows"
+                className="border-border/70 bg-muted/25 hover:bg-muted/40 rounded-xl border p-4 text-sm font-medium transition-colors"
+              >
+                Скачать для Windows
+              </a>
             </div>
+            <p className="text-muted-foreground text-xs">
+              Сначала откроется короткая инструкция по установке и первому
+              запуску.
+            </p>
 
             <div className="border-border/70 bg-muted/25 rounded-xl border p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
