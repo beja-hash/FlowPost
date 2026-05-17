@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Edit3, Plus } from "lucide-react";
+import { Edit3 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -19,19 +19,19 @@ import { Textarea } from "@/components/ui/textarea";
 import type { BrandListItem } from "../types";
 
 type BrandDialogProps = {
-  brand?: BrandListItem;
+  brand: BrandListItem;
   onSaved: (brand: BrandListItem) => void;
 };
 
-function getInitialForm(brand?: BrandListItem) {
+function getInitialForm(brand: BrandListItem) {
   return {
-    name: brand?.name ?? "",
-    siteUrl: brand?.siteUrl ?? "",
-    description: brand?.description ?? "",
-    industry: brand?.industry ?? "",
-    geography: brand?.geography ?? "",
-    targetAudience: brand?.targetAudience ?? "",
-    primaryCta: brand?.primaryCta ?? "",
+    name: brand.name,
+    siteUrl: brand.siteUrl,
+    description: brand.description ?? "",
+    industry: brand.industry ?? "",
+    geography: brand.geography ?? "",
+    targetAudience: brand.targetAudience ?? "",
+    primaryCta: brand.primaryCta ?? "",
   };
 }
 
@@ -39,7 +39,6 @@ export function BrandDialog({ brand, onSaved }: BrandDialogProps) {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(() => getInitialForm(brand));
   const [isPending, startTransition] = useTransition();
-  const isEdit = Boolean(brand);
 
   function updateField<K extends keyof typeof form>(key: K, value: string) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -50,14 +49,11 @@ export function BrandDialog({ brand, onSaved }: BrandDialogProps) {
 
     startTransition(async () => {
       try {
-        const response = await fetch(
-          isEdit ? `/api/brands/${brand?.id}` : "/api/brands",
-          {
-            method: isEdit ? "PATCH" : "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(form),
-          },
-        );
+        const response = await fetch(`/api/brands/${brand.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(form),
+        });
 
         const body = (await response.json()) as
           | { brand: BrandListItem }
@@ -70,7 +66,7 @@ export function BrandDialog({ brand, onSaved }: BrandDialogProps) {
         }
 
         onSaved(body.brand);
-        toast.success(isEdit ? "Бренд обновлен." : "Бренд создан.");
+        toast.success("Бренд обновлен.");
         setOpen(false);
       } catch (error) {
         toast.error(
@@ -91,14 +87,14 @@ export function BrandDialog({ brand, onSaved }: BrandDialogProps) {
       }}
     >
       <DialogTrigger
-        render={<Button size="sm" variant={isEdit ? "outline" : "default"} />}
+        render={<Button size="sm" variant="outline" />}
       >
-        {isEdit ? <Edit3 /> : <Plus />}
-        {isEdit ? "Изменить" : "Добавить бренд"}
+        <Edit3 />
+        Изменить
       </DialogTrigger>
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>{isEdit ? "Редактировать бренд" : "Новый бренд"}</DialogTitle>
+          <DialogTitle>Редактировать бренд</DialogTitle>
         </DialogHeader>
 
         <form className="grid gap-4" onSubmit={handleSubmit}>

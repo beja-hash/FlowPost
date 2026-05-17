@@ -52,7 +52,7 @@ export function AppSidebar({ user, workspace }: AppSidebarProps) {
           collapsed && "items-center px-2",
         )}
       >
-        <Brand compact={collapsed} />
+        <Brand compact={collapsed} tone="sidebar" />
       </SidebarHeader>
       <SidebarContent className="px-3 py-4 group-data-[collapsible=icon]:px-2">
         <SidebarGroup>

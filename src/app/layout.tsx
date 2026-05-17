@@ -25,7 +25,10 @@ export const metadata: Metadata = {
   },
   description: siteConfig.description,
   applicationName: siteConfig.name,
-  authors: [{ name: "Posting" }],
+  authors: [{ name: "FlowPost" }],
+  icons: {
+    icon: [{ url: "/icon.svg", type: "image/svg+xml" }],
+  },
   keywords: [
     "контент-платформа",
     "публикации",
