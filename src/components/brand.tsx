@@ -5,12 +5,14 @@ import { cn } from "@/lib/utils";
 type BrandProps = {
   compact?: boolean;
   className?: string;
+  href?: string;
   tone?: "default" | "sidebar";
 };
 
 export function Brand({
   compact = false,
   className,
+  href = "/dashboard",
   tone = "default",
 }: BrandProps) {
   const labelClass =
@@ -20,7 +22,7 @@ export function Brand({
 
   return (
     <Link
-      href="/dashboard"
+      href={href}
       className={cn(
         "group/brand focus-visible:ring-ring/30 inline-flex min-w-0 items-center gap-3 rounded-2xl transition-all duration-200 outline-none focus-visible:ring-4",
         compact && "w-full justify-center gap-0",
@@ -32,10 +34,10 @@ export function Brand({
         <span className="absolute inset-0 bg-[radial-gradient(circle_at_28%_20%,rgba(146,197,253,0.28),transparent_34%)]" />
         <span className="absolute right-0 bottom-0 h-7 w-8 rounded-tl-full bg-emerald-300/10 blur-sm" />
         <span className="relative grid size-6 place-items-center">
-          <span className="absolute left-0 top-1 h-1.5 w-4 rounded-full bg-slate-100/88" />
-          <span className="absolute left-1 top-2.5 h-1.5 w-5 rounded-full bg-sky-200/85" />
-          <span className="absolute left-2 top-4 h-1.5 w-4 rounded-full bg-emerald-200/80" />
-          <span className="absolute right-0 top-2.5 size-1.5 rounded-full bg-white/80" />
+          <span className="absolute top-1 left-0 h-1.5 w-4 rounded-full bg-slate-100/88" />
+          <span className="absolute top-2.5 left-1 h-1.5 w-5 rounded-full bg-sky-200/85" />
+          <span className="absolute top-4 left-2 h-1.5 w-4 rounded-full bg-emerald-200/80" />
+          <span className="absolute top-2.5 right-0 size-1.5 rounded-full bg-white/80" />
         </span>
       </span>
       {!compact ? (
@@ -49,7 +51,10 @@ export function Brand({
             FlowPost
           </span>
           <span
-            className={cn("mt-1 truncate text-[0.7rem] font-medium", subtitleClass)}
+            className={cn(
+              "mt-1 truncate text-[0.7rem] font-medium",
+              subtitleClass,
+            )}
           >
             Контент-дистрибуция
           </span>
