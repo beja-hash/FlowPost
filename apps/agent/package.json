@@ -1,0 +1,23 @@
+{
+  "name": "flowpost-agent",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/main.js",
+  "description": "FlowPost Desktop Agent",
+  "author": "FlowPost",
+  "build": {
+    "appId": "com.flowpost.agent",
+    "electronVersion": "39.8.10",
+    "productName": "FlowPost Agent",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": "dmg"
+    },
+    "win": {
+      "target": "nsis"
+    }
+  }
+}

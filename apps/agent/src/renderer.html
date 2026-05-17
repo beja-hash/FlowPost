@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FlowPost Agent</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">FlowPost Desktop Agent</p>
+        <h1>Подключение локального браузера</h1>
+        <p>
+          Agent открывает отдельный браузер на вашем компьютере, чтобы FlowPost
+          мог выполнять задачи публикации без передачи cookies и паролей на
+          сервер.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>Подключить Agent</h2>
+        <label>
+          FlowPost API URL
+          <input id="apiUrl" value="https://flowpost-3yxb.onrender.com" />
+        </label>
+        <label>
+          Код подключения
+          <input id="pairingCode" placeholder="ABCDE-12345" />
+        </label>
+        <button id="pairButton">Подключить</button>
+        <p id="status" class="muted"></p>
+      </section>
+
+      <section class="card trust">
+        <h2>Ваши данные остаются на вашем компьютере</h2>
+        <p>
+          FlowPost Agent запускает браузер локально на вашем устройстве. Сессии
+          площадок, cookies и авторизация в Dzen/VC.ru хранятся в локальном
+          профиле браузера и не передаются на сервер FlowPost.
+        </p>
+        <ul>
+          <li>Браузер открывается на вашем компьютере, а не на сервере.</li>
+          <li>Логины и пароли от площадок не передаются в FlowPost.</li>
+          <li>Cookies и сессии хранятся локально в профиле Agent.</li>
+          <li>
+            FlowPost получает только технические статусы выполнения задач.
+          </li>
+          <li>
+            Agent работает только после подключения через одноразовый код.
+          </li>
+        </ul>
+      </section>
+
+      <section class="grid">
+        <div class="card">
+          <h2>Что FlowPost НЕ получает</h2>
+          <ul>
+            <li>пароль от Dzen/VC.ru</li>
+            <li>cookies площадок</li>
+            <li>доступ к вашему основному браузеру</li>
+            <li>данные банковской карты</li>
+            <li>личные файлы на компьютере</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h2>Что FlowPost получает</h2>
+          <ul>
+            <li>ID задачи публикации</li>
+            <li>выбранную платформу</li>
+            <li>статус выполнения задачи</li>
+            <li>технические логи без паролей и cookies</li>
+            <li>результат выполнения: успешно / ошибка</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Безопасность и локальные данные</h2>
+        <p>Профиль браузера FlowPost: <code id="profileRoot"></code></p>
+        <p>
+          Статус подключения:
+          <strong id="connectionStatus">disconnected</strong>
+        </p>
+        <p>Аккаунт FlowPost: <span id="account">не подключен</span></p>
+        <div class="actions">
+          <button id="openProfiles">Открыть папку профилей</button>
+          <button id="deleteProfiles" class="danger">
+            Удалить локальный профиль браузера
+          </button>
+          <button id="disconnect">Отключить Agent</button>
+        </div>
+        <p class="muted">
+          После удаления профиля потребуется заново войти в Dzen/VC.ru. Основной
+          браузер пользователя не затрагивается.
+        </p>
+      </section>
+    </main>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

@@ -87,7 +87,7 @@ export async function POST(request: NextRequest) {
     });
 
     debugLog("[api/platforms/launch]", {
-      step: "local-agent-required",
+      step: "desktop-agent-required",
       userId: session.user.id,
       platform: payload.platform,
     });
@@ -95,9 +95,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error: {
-          code: "LOCAL_AGENT_REQUIRED",
+          code: "DESKTOP_AGENT_REQUIRED",
           message:
-            "Для запуска браузера запустите FlowPost Agent на компьютере пользователя.",
+            "Для запуска браузера подключите FlowPost Agent на компьютере пользователя.",
         },
       },
       {

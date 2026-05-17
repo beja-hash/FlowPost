@@ -1,5 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
+import { NextResponse } from "next/server";
 
 import { createPairingCodeForUser } from "@/features/agent/server/agent-service";
 import { toAgentErrorResponse } from "@/features/agent/server/error-response";
@@ -8,7 +7,7 @@ import { auth } from "@/infrastructure/auth/session";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function POST(request: NextRequest) {
+export async function POST() {
   try {
     const session = await auth();
 
@@ -26,14 +25,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    z.object({}).parse(await request.json().catch(() => ({})));
     const pairing = await createPairingCodeForUser(session.user.id);
 
-    return NextResponse.json({
-      pairing,
-      deprecated: true,
-      message: "Используйте /api/agent/pairing/create.",
-    });
+    return NextResponse.json({ pairing });
   } catch (error) {
     return toAgentErrorResponse(error);
   }

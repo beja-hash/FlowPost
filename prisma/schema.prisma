@@ -132,7 +132,7 @@ enum StrategyArticleTaskStatus {
   WAITING_CONNECTION
 }
 
-enum AgentSessionStatus {
+enum AgentDeviceStatus {
   ACTIVE
   REVOKED
   EXPIRED
@@ -171,7 +171,8 @@ model User {
   articleAssets     ArticleAsset[]    @relation("AssetAuthor")
   contentStrategies ContentStrategy[]
   agentHeartbeats   AgentHeartbeat[]
-  agentSessions     AgentSession[]
+  agentDevices      AgentDevice[]
+  agentPairingCodes AgentPairingCode[]
   agentJobs         AgentJob[]
   sessions          Session[]
   accounts          Account[]
@@ -442,13 +443,15 @@ model AgentHeartbeat {
   @@index([userId, lastSeenAt])
 }
 
-model AgentSession {
-  id         String             @id @default(cuid())
+model AgentDevice {
+  id         String            @id @default(cuid())
   userId     String
-  tokenHash  String             @unique @db.VarChar(128)
-  name       String             @default("FlowPost Local Agent") @db.VarChar(160)
-  status     AgentSessionStatus @default(ACTIVE)
-  createdAt  DateTime           @default(now())
+  name       String            @default("FlowPost Agent") @db.VarChar(160)
+  tokenHash  String            @unique @db.VarChar(128)
+  status     AgentDeviceStatus @default(ACTIVE)
+  platform   String?           @db.VarChar(80)
+  appVersion String?           @db.VarChar(40)
+  createdAt  DateTime          @default(now())
   lastSeenAt DateTime?
   revokedAt  DateTime?
 
@@ -458,27 +461,40 @@ model AgentSession {
   @@index([userId, status, lastSeenAt])
 }
 
-model AgentJob {
-  id          String         @id @default(cuid())
-  userId      String
-  sessionId   String?
-  type        AgentJobType
-  platform    String?        @db.VarChar(64)
-  payload     Json
-  status      AgentJobStatus @default(QUEUED)
-  result      Json?
-  error       String?        @db.Text
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
-  startedAt   DateTime?
-  completedAt DateTime?
+model AgentPairingCode {
+  id        String    @id @default(cuid())
+  userId    String
+  codeHash  String    @unique @db.VarChar(128)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
 
-  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  session AgentSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
-  logs    AgentJobLog[]
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt, usedAt])
+}
+
+model AgentJob {
+  id            String         @id @default(cuid())
+  userId        String
+  agentDeviceId String?
+  type          AgentJobType
+  platform      String?        @db.VarChar(64)
+  payload       Json
+  status        AgentJobStatus @default(QUEUED)
+  result        Json?
+  error         String?        @db.Text
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  startedAt     DateTime?
+  completedAt   DateTime?
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agentDevice AgentDevice? @relation(fields: [agentDeviceId], references: [id], onDelete: SetNull)
+  logs        AgentJobLog[]
 
   @@index([userId, status, createdAt])
-  @@index([sessionId, status, createdAt])
+  @@index([agentDeviceId, status, createdAt])
   @@index([type, status, createdAt])
 }
 

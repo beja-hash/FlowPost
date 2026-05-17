@@ -1,10 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import {
+  AgentDeviceStatus,
   AgentJobStatus,
   AgentJobType,
-  AgentSessionStatus,
   PlatformAccountStatus,
+  type AgentDevice,
   type AgentJob,
 } from "@prisma/client";
 
@@ -15,6 +16,8 @@ import {
 } from "@/infrastructure/platforms/platform-registry";
 
 const TOKEN_PREFIX = "fp_agent_";
+const PAIRING_TTL_MINUTES = 15;
+const ACTIVE_AGENT_WINDOW_MS = 2 * 60 * 1000;
 
 export class AgentServiceError extends Error {
   constructor(
@@ -29,6 +32,19 @@ export class AgentServiceError extends Error {
 
 export function hashAgentToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
+}
+
+function normalizePairingCode(code: string) {
+  return code.replace(/[^a-z0-9]/gi, "").toUpperCase();
+}
+
+function hashPairingCode(code: string) {
+  return createHash("sha256").update(normalizePairingCode(code)).digest("hex");
+}
+
+function createPairingCode() {
+  const raw = randomBytes(5).toString("hex").toUpperCase();
+  return `${raw.slice(0, 5)}-${raw.slice(5)}`;
 }
 
 export function createAgentToken() {
@@ -47,25 +63,83 @@ export function publicAgentJob(job: AgentJob) {
   };
 }
 
-export async function createAgentSession(userId: string, name?: string) {
-  const token = createAgentToken();
-  const session = await prisma.agentSession.create({
+export function publicAgentDevice(device: AgentDevice) {
+  return {
+    id: device.id,
+    name: device.name,
+    status: device.status.toLowerCase(),
+    platform: device.platform,
+    appVersion: device.appVersion,
+    createdAt: device.createdAt.toISOString(),
+    lastSeenAt: device.lastSeenAt?.toISOString() ?? null,
+  };
+}
+
+export async function createPairingCodeForUser(userId: string) {
+  const code = createPairingCode();
+  const expiresAt = new Date(Date.now() + PAIRING_TTL_MINUTES * 60 * 1000);
+
+  await prisma.agentPairingCode.create({
     data: {
       userId,
-      tokenHash: hashAgentToken(token),
-      name: name?.trim() || "FlowPost Local Agent",
+      codeHash: hashPairingCode(code),
+      expiresAt,
     },
   });
 
   return {
-    session: {
-      id: session.id,
-      name: session.name,
-      status: session.status.toLowerCase(),
-      createdAt: session.createdAt.toISOString(),
-      lastSeenAt: session.lastSeenAt?.toISOString() ?? null,
+    code,
+    expiresAt: expiresAt.toISOString(),
+  };
+}
+
+export async function confirmPairingCode({
+  code,
+  name,
+  platform,
+  appVersion,
+}: {
+  code: string;
+  name?: string;
+  platform?: string;
+  appVersion?: string;
+}) {
+  const pairing = await prisma.agentPairingCode.findUnique({
+    where: {
+      codeHash: hashPairingCode(code),
     },
+  });
+
+  if (!pairing || pairing.usedAt || pairing.expiresAt.getTime() < Date.now()) {
+    throw new AgentServiceError(
+      400,
+      "INVALID_PAIRING_CODE",
+      "Код подключения недействителен или истек.",
+    );
+  }
+
+  const token = createAgentToken();
+  const device = await prisma.$transaction(async (tx) => {
+    await tx.agentPairingCode.update({
+      where: { id: pairing.id },
+      data: { usedAt: new Date() },
+    });
+
+    return tx.agentDevice.create({
+      data: {
+        userId: pairing.userId,
+        name: name?.trim() || "FlowPost Agent",
+        tokenHash: hashAgentToken(token),
+        platform: platform?.slice(0, 80),
+        appVersion: appVersion?.slice(0, 40),
+        lastSeenAt: new Date(),
+      },
+    });
+  });
+
+  return {
     token,
+    device: publicAgentDevice(device),
   };
 }
 
@@ -76,17 +150,17 @@ export async function authenticateAgent(authorization: string | null) {
     throw new AgentServiceError(
       401,
       "AGENT_TOKEN_REQUIRED",
-      "Передайте FLOWPOST_AGENT_TOKEN в Bearer token.",
+      "Agent token обязателен.",
     );
   }
 
-  const session = await prisma.agentSession.findUnique({
+  const device = await prisma.agentDevice.findUnique({
     where: {
       tokenHash: hashAgentToken(token),
     },
   });
 
-  if (!session || session.status !== AgentSessionStatus.ACTIVE) {
+  if (!device || device.status !== AgentDeviceStatus.ACTIVE) {
     throw new AgentServiceError(
       401,
       "INVALID_AGENT_TOKEN",
@@ -94,26 +168,75 @@ export async function authenticateAgent(authorization: string | null) {
     );
   }
 
-  await prisma.agentSession.update({
+  await prisma.agentDevice.update({
     where: {
-      id: session.id,
+      id: device.id,
     },
     data: {
       lastSeenAt: new Date(),
     },
   });
 
-  return session;
+  return device;
+}
+
+export async function listAgentDevices(userId: string) {
+  const devices = await prisma.agentDevice.findMany({
+    where: {
+      userId,
+      status: AgentDeviceStatus.ACTIVE,
+    },
+    orderBy: [{ lastSeenAt: "desc" }, { createdAt: "desc" }],
+  });
+
+  return devices.map(publicAgentDevice);
+}
+
+export async function hasActiveAgentDevice(userId: string) {
+  const cutoff = new Date(Date.now() - ACTIVE_AGENT_WINDOW_MS);
+  const device = await prisma.agentDevice.findFirst({
+    where: {
+      userId,
+      status: AgentDeviceStatus.ACTIVE,
+      lastSeenAt: {
+        gte: cutoff,
+      },
+    },
+    orderBy: {
+      lastSeenAt: "desc",
+    },
+  });
+
+  return device;
+}
+
+export async function revokeAgentDevice(userId: string, deviceId: string) {
+  const device = await prisma.agentDevice.findFirst({
+    where: { id: deviceId, userId },
+  });
+
+  if (!device) {
+    throw new AgentServiceError(
+      404,
+      "AGENT_DEVICE_NOT_FOUND",
+      "Agent не найден.",
+    );
+  }
+
+  const revoked = await prisma.agentDevice.update({
+    where: { id: device.id },
+    data: { status: AgentDeviceStatus.REVOKED, revokedAt: new Date() },
+  });
+
+  return publicAgentDevice(revoked);
 }
 
 export async function createConnectPlatformJob({
   userId,
   platform,
-  sessionName,
 }: {
   userId: string;
   platform: PlatformSlug;
-  sessionName?: string;
 }) {
   const config = getPlatformConfig(platform);
 
@@ -125,10 +248,22 @@ export async function createConnectPlatformJob({
     );
   }
 
-  const { session, token } = await createAgentSession(userId, sessionName);
+  const activeDevice = await hasActiveAgentDevice(userId);
+
+  if (!activeDevice) {
+    return {
+      status: "requires_agent" as const,
+      message:
+        "Чтобы открыть браузер на вашем компьютере, установите и подключите FlowPost Agent.",
+      agentDevice: null,
+      job: null,
+    };
+  }
+
   const job = await prisma.agentJob.create({
     data: {
       userId,
+      agentDeviceId: activeDevice.id,
       type: AgentJobType.CONNECT_PLATFORM,
       platform: config.slug,
       payload: {
@@ -142,19 +277,22 @@ export async function createConnectPlatformJob({
   });
 
   return {
-    session,
-    token,
+    status: "queued" as const,
+    message:
+      "Задание создано. FlowPost Agent откроет браузер на вашем компьютере.",
+    agentDevice: publicAgentDevice(activeDevice),
     job: publicAgentJob(job),
   };
 }
 
 export async function getNextAgentJob(authorization: string | null) {
-  const session = await authenticateAgent(authorization);
+  const device = await authenticateAgent(authorization);
 
   const job = await prisma.agentJob.findFirst({
     where: {
-      userId: session.userId,
+      userId: device.userId,
       status: AgentJobStatus.QUEUED,
+      OR: [{ agentDeviceId: device.id }, { agentDeviceId: null }],
     },
     orderBy: {
       createdAt: "asc",
@@ -170,7 +308,7 @@ export async function getNextAgentJob(authorization: string | null) {
       id: job.id,
     },
     data: {
-      sessionId: session.id,
+      agentDeviceId: device.id,
       status: AgentJobStatus.PICKED_UP,
       startedAt: new Date(),
     },
@@ -211,12 +349,13 @@ export async function updateAgentJobStatus({
   result?: unknown;
   error?: string | null;
 }) {
-  const session = await authenticateAgent(authorization);
+  const device = await authenticateAgent(authorization);
 
   const job = await prisma.agentJob.findFirst({
     where: {
       id: jobId,
-      userId: session.userId,
+      userId: device.userId,
+      OR: [{ agentDeviceId: device.id }, { agentDeviceId: null }],
     },
   });
 
@@ -234,7 +373,7 @@ export async function updateAgentJobStatus({
       id: job.id,
     },
     data: {
-      sessionId: job.sessionId ?? session.id,
+      agentDeviceId: job.agentDeviceId ?? device.id,
       status,
       result: result === undefined ? undefined : (result as object),
       error: error === undefined ? undefined : error,
@@ -269,11 +408,11 @@ export async function updateAgentJobStatus({
         userId: updatedJob.userId,
         platform: updatedJob.platform,
         status: PlatformAccountStatus.CONNECTED,
-        sessionPath: `local-agent:${session.id}:${updatedJob.platform}`,
+        sessionPath: `flowpost-agent:${device.id}:${updatedJob.platform}`,
       },
       update: {
         status: PlatformAccountStatus.CONNECTED,
-        sessionPath: `local-agent:${session.id}:${updatedJob.platform}`,
+        sessionPath: `flowpost-agent:${device.id}:${updatedJob.platform}`,
       },
     });
   }
@@ -292,11 +431,12 @@ export async function appendAgentJobLog({
   message: string;
   level?: string;
 }) {
-  const session = await authenticateAgent(authorization);
+  const device = await authenticateAgent(authorization);
   const job = await prisma.agentJob.findFirst({
     where: {
       id: jobId,
-      userId: session.userId,
+      userId: device.userId,
+      OR: [{ agentDeviceId: device.id }, { agentDeviceId: null }],
     },
     select: {
       id: true,

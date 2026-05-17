@@ -20,6 +20,8 @@
 # production
 /build
 /dist
+/apps/agent/dist
+/apps/agent/node_modules
 
 # misc
 .DS_Store

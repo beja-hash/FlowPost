@@ -57,9 +57,21 @@ type AgentJob = {
   status: AgentJobStatus;
 };
 
+type AgentDevice = {
+  id: string;
+  name: string;
+  status: string;
+  platform: string | null;
+  appVersion: string | null;
+  lastSeenAt: string | null;
+};
+
+type PairingState = {
+  code: string;
+  expiresAt: string;
+};
+
 type AgentConnectState = {
-  token: string;
-  command: string;
   job: AgentJob;
 };
 
@@ -89,6 +101,55 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
   const [agentConnect, setAgentConnect] = useState<AgentConnectState | null>(
     null,
   );
+  const [pairing, setPairing] = useState<PairingState | null>(null);
+  const [agentDevices, setAgentDevices] = useState<AgentDevice[]>([]);
+  const [creatingPairing, setCreatingPairing] = useState(false);
+
+  async function refreshAgentDevices() {
+    try {
+      const response = await fetch("/api/agent/devices");
+      const body = (await response.json()) as {
+        devices?: AgentDevice[];
+      };
+
+      if (response.ok) {
+        setAgentDevices(body.devices ?? []);
+      }
+    } catch (error) {
+      console.error("[platform-agent-devices]", error);
+    }
+  }
+
+  async function createPairingCode() {
+    setCreatingPairing(true);
+
+    try {
+      const response = await fetch("/api/agent/pairing/create", {
+        method: "POST",
+      });
+      const body = (await response.json()) as {
+        pairing?: PairingState;
+        error?: {
+          message?: string;
+        };
+      };
+
+      if (!response.ok || !body.pairing) {
+        throw new Error(body.error?.message ?? "Не удалось создать код.");
+      }
+
+      setPairing(body.pairing);
+      toast.info("Код подключения создан.");
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Не удалось создать код подключения.",
+      );
+    } finally {
+      setCreatingPairing(false);
+    }
+  }
 
   async function refreshAgentJob(jobId: string) {
     try {
@@ -145,6 +206,24 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
     };
   }, [agentConnect?.job.id, agentConnect?.job.status]);
 
+  useEffect(() => {
+    if (!selectedPlatform) {
+      return;
+    }
+
+    const initialRefresh = window.setTimeout(() => {
+      void refreshAgentDevices();
+    }, 0);
+    const interval = window.setInterval(() => {
+      void refreshAgentDevices();
+    }, 3000);
+
+    return () => {
+      window.clearTimeout(initialRefresh);
+      window.clearInterval(interval);
+    };
+  }, [selectedPlatform]);
+
   async function handleConnect() {
     if (!selectedPlatform) {
       return;
@@ -165,29 +244,32 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
       });
 
       const body = (await response.json()) as {
+        status?: "requires_agent" | "queued";
+        message?: string;
         platform?: PlatformConnection;
-        agent?: {
-          token: string;
-          command: string;
-        };
+        agentDevice?: AgentDevice | null;
         job?: AgentJob;
         error?: {
           message?: string;
         };
       };
 
-      if (!response.ok || !body.agent || !body.job) {
+      if (!response.ok) {
         throw new Error(
           body.error?.message ?? "Не удалось подключить платформу.",
         );
       }
 
-      setAgentConnect({
-        token: body.agent.token,
-        command: body.agent.command,
-        job: body.job,
-      });
-      toast.info("Задание создано. Запустите FlowPost Agent локально.");
+      if (body.status === "requires_agent" || !body.job) {
+        toast.info(
+          body.message ??
+            "Чтобы открыть браузер на вашем компьютере, установите FlowPost Agent.",
+        );
+        return;
+      }
+
+      setAgentConnect({ job: body.job });
+      toast.info("Agent подключен. Задание на открытие браузера создано.");
     } catch (error) {
       toast.error(
         error instanceof Error
@@ -332,10 +414,11 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
           if (!open) {
             setSelectedPlatform(null);
             setAgentConnect(null);
+            setPairing(null);
           }
         }}
       >
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Подключение браузера</DialogTitle>
             <DialogDescription>
@@ -346,15 +429,14 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
           </DialogHeader>
           <div className="space-y-5">
             <p className="text-muted-foreground text-sm leading-6">
-              Для публикации через ваш аккаунт FlowPost открывает браузер на
-              вашем компьютере. Cookies и сессии площадок хранятся локально и не
-              передаются на сервер.
+              FlowPost публикует статьи через браузер на вашем компьютере.
+              Сессии Dzen и VC.ru хранятся локально и не передаются на сервер.
             </p>
 
             <ol className="grid gap-3 text-sm leading-6">
               {[
-                "Скачайте или запустите FlowPost Agent",
-                "Вставьте код подключения или используйте команду ниже",
+                "Установите FlowPost Agent",
+                "Введите код подключения",
                 "Дождитесь открытия браузера",
                 "Войдите в нужную платформу",
                 "Вернитесь в FlowPost",
@@ -368,20 +450,67 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
               ))}
             </ol>
 
+            <div className="grid gap-3 sm:grid-cols-2">
+              <a
+                href="/downloads/flowpost-agent-mac.dmg"
+                className="border-border/70 bg-muted/25 hover:bg-muted/40 rounded-xl border p-4 text-sm font-medium transition-colors"
+              >
+                Скачать для macOS
+              </a>
+              <a
+                href="/downloads/flowpost-agent-windows.exe"
+                className="border-border/70 bg-muted/25 hover:bg-muted/40 rounded-xl border p-4 text-sm font-medium transition-colors"
+              >
+                Скачать для Windows
+              </a>
+            </div>
+
+            <div className="border-border/70 bg-muted/25 rounded-xl border p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium">Код подключения</p>
+                  <p className="text-muted-foreground mt-1 text-xs">
+                    Одноразовый код действует 15 минут.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void createPairingCode()}
+                  disabled={creatingPairing}
+                >
+                  {creatingPairing ? "Создание..." : "Создать код"}
+                </Button>
+              </div>
+              {pairing ? (
+                <div className="bg-background/80 mt-4 rounded-lg p-4">
+                  <p className="font-mono text-2xl font-semibold tracking-[0.18em]">
+                    {pairing.code}
+                  </p>
+                  <p className="text-muted-foreground mt-2 text-xs">
+                    Истекает: {new Date(pairing.expiresAt).toLocaleString()}
+                  </p>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <StatusBadge
+                tone={agentDevices.length > 0 ? "positive" : "neutral"}
+              >
+                {agentDevices.length > 0
+                  ? "Agent подключен. Можно открыть браузер."
+                  : "Agent не подключен"}
+              </StatusBadge>
+              <span className="text-muted-foreground text-xs">
+                Чтобы открыть браузер на вашем компьютере, установите FlowPost
+                Agent.
+              </span>
+            </div>
+
             {agentConnect ? (
               <div className="border-border/70 bg-muted/25 space-y-4 rounded-xl border p-4">
-                <div>
-                  <p className="text-sm font-medium">Команда для MVP</p>
-                  <pre className="bg-background/80 text-muted-foreground mt-2 overflow-x-auto rounded-lg p-3 text-xs leading-5">
-                    <code>{agentConnect.command}</code>
-                  </pre>
-                </div>
-                <div>
-                  <p className="text-sm font-medium">Agent token</p>
-                  <pre className="bg-background/80 text-muted-foreground mt-2 overflow-x-auto rounded-lg p-3 text-xs leading-5">
-                    <code>{agentConnect.token}</code>
-                  </pre>
-                </div>
                 <div className="flex flex-wrap items-center gap-3">
                   <StatusBadge
                     tone={
@@ -401,6 +530,8 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
                 </div>
               </div>
             ) : null}
+
+            <TrustBlocks />
           </div>
           <DialogFooter>
             <Button
@@ -408,6 +539,7 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
               onClick={() => {
                 setSelectedPlatform(null);
                 setAgentConnect(null);
+                setPairing(null);
               }}
               disabled={connectingPlatform !== null}
             >
@@ -415,9 +547,13 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
             </Button>
             <Button
               onClick={() => void handleConnect()}
-              disabled={connectingPlatform !== null || agentConnect !== null}
+              disabled={
+                connectingPlatform !== null ||
+                agentConnect !== null ||
+                agentDevices.length === 0
+              }
             >
-              {connectingPlatform ? "Создание задания..." : "Создать задание"}
+              {connectingPlatform ? "Создание задания..." : "Открыть браузер"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -471,5 +607,57 @@ function PlatformActions({
     <Button variant="outline" size="sm" onClick={onConnect}>
       {platform.status === "expired" ? "Переподключить" : "Подключить"}
     </Button>
+  );
+}
+
+function TrustBlocks() {
+  return (
+    <div className="grid gap-4">
+      <div className="border-border/70 bg-muted/20 rounded-xl border p-4">
+        <h3 className="text-sm font-semibold">
+          Ваши данные остаются на вашем компьютере
+        </h3>
+        <p className="text-muted-foreground mt-2 text-sm leading-6">
+          FlowPost Agent запускает браузер локально на вашем устройстве. Сессии
+          площадок, cookies и авторизация в Dzen/VC.ru хранятся в локальном
+          профиле браузера и не передаются на сервер FlowPost. Сервер получает
+          только статус выполнения задачи: браузер открыт, публикация запущена,
+          завершена или произошла ошибка.
+        </p>
+        <ul className="text-muted-foreground mt-3 grid gap-2 text-sm leading-6">
+          <li>Браузер открывается на вашем компьютере, а не на сервере.</li>
+          <li>Логины и пароли от площадок не передаются в FlowPost.</li>
+          <li>Cookies и сессии хранятся локально в профиле Agent.</li>
+          <li>
+            FlowPost получает только технические статусы выполнения задач.
+          </li>
+          <li>
+            Agent работает только после подключения через одноразовый код.
+          </li>
+        </ul>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="border-border/70 bg-muted/20 rounded-xl border p-4">
+          <h3 className="text-sm font-semibold">Что FlowPost НЕ получает</h3>
+          <ul className="text-muted-foreground mt-3 grid gap-2 text-sm leading-6">
+            <li>пароль от Dzen/VC.ru</li>
+            <li>cookies площадок</li>
+            <li>доступ к вашему основному браузеру</li>
+            <li>данные банковской карты</li>
+            <li>личные файлы на компьютере</li>
+          </ul>
+        </div>
+        <div className="border-border/70 bg-muted/20 rounded-xl border p-4">
+          <h3 className="text-sm font-semibold">Что FlowPost получает</h3>
+          <ul className="text-muted-foreground mt-3 grid gap-2 text-sm leading-6">
+            <li>ID задачи публикации</li>
+            <li>выбранную платформу</li>
+            <li>статус выполнения задачи</li>
+            <li>технические логи без паролей и cookies</li>
+            <li>результат выполнения: успешно / ошибка</li>
+          </ul>
+        </div>
+      </div>
+    </div>
   );
 }

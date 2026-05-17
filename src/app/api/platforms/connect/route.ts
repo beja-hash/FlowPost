@@ -110,13 +110,10 @@ export async function POST(request: NextRequest) {
     });
 
     const platformConfig = getPlatformConfig(payload.platform);
-    const agent = await createConnectPlatformJob({
+    const result = await createConnectPlatformJob({
       userId: session.user.id,
       platform: payload.platform,
-      sessionName: `FlowPost Agent: ${platformConfig?.name ?? payload.platform}`,
     });
-    const apiUrl = request.nextUrl.origin;
-    const command = `FLOWPOST_API_URL=${apiUrl} FLOWPOST_AGENT_TOKEN=${agent.token} npm run agent`;
 
     debugLog("[api/platforms/connect]", {
       step: "request:success",
@@ -125,9 +122,9 @@ export async function POST(request: NextRequest) {
     });
 
     return NextResponse.json({
-      mode: "local_agent",
-      message:
-        "Для подключения браузера запустите FlowPost Agent на компьютере пользователя.",
+      mode: "desktop_agent",
+      status: result.status,
+      message: result.message,
       platform: platformConfig
         ? {
             id: platformConfig.slug,
@@ -136,12 +133,8 @@ export async function POST(request: NextRequest) {
             status: "not_connected",
           }
         : null,
-      agent: {
-        session: agent.session,
-        token: agent.token,
-        command,
-      },
-      job: agent.job,
+      agentDevice: result.agentDevice,
+      job: result.job,
     });
   } catch (error) {
     return toErrorResponse(error);
