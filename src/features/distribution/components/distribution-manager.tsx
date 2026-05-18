@@ -146,7 +146,7 @@ export function DistributionManager({
         }),
       });
       const body = (await response.json()) as {
-        status?: "requires_agent" | "queued";
+        status?: "requires_agent" | "queued" | "busy";
         message?: string;
         job?: { id: string };
         error?: { message?: string };
@@ -164,6 +164,8 @@ export function DistributionManager({
           body.message ??
             "Подключите FlowPost Agent, чтобы открыть браузер на вашем компьютере.",
         );
+      } else if (body.status === "busy") {
+        toast.info(body.message ?? "Agent уже выполняет задачу. Дождитесь завершения.");
       } else if (endpoint === "/api/articles/publish" && body.job) {
         toast.success("Задача отправлена в FlowPost Agent.");
       } else {

@@ -10,6 +10,10 @@ const prepareBrowser = document.getElementById("prepareBrowser");
 const disconnectButton = document.getElementById("disconnect");
 const deleteProfilesButton = document.getElementById("deleteProfiles");
 const openProfilesButton = document.getElementById("openProfiles");
+const autoLaunch = document.getElementById("autoLaunch");
+const backgroundStatus = document.getElementById("backgroundStatus");
+const heartbeatStatus = document.getElementById("heartbeatStatus");
+const lastHeartbeat = document.getElementById("lastHeartbeat");
 let operation = "idle";
 
 const userSafeFallbacks = {
@@ -53,6 +57,19 @@ function applyState(state) {
   connectionStatus.textContent =
     state.status || (state.connected ? "connected" : "disconnected");
   account.textContent = state.account || "не подключен";
+  autoLaunch.checked = Boolean(state.autoLaunch);
+  backgroundStatus.textContent = state.backgroundRunning
+    ? "Agent работает в фоне"
+    : "Фоновая работа не активна";
+  heartbeatStatus.textContent = state.connected
+    ? "Heartbeat активен"
+    : "Heartbeat начнется после подключения";
+  lastHeartbeat.textContent = state.lastHeartbeatAt
+    ? new Date(state.lastHeartbeatAt).toLocaleString()
+    : "нет данных";
+  if (state.pairingCode) {
+    pairingCode.value = state.pairingCode;
+  }
   prepareBrowser.hidden = state.browserInstallStatus !== "failed";
   if (state.status === "preparing_browser") {
     setOperation("launching_browser");
@@ -71,6 +88,7 @@ function applyState(state) {
     setOperation("error");
   }
   if (state.error) setStatus(normalizeError(state.error, userSafeFallbacks.browser));
+  if (state.backgroundNotice) setStatus(state.backgroundNotice);
 }
 
 window.flowPostAgent.getState().then(applyState);
@@ -157,4 +175,19 @@ openProfilesButton.addEventListener("click", async () => {
     return;
   }
   setOperation("connected");
+});
+
+autoLaunch.addEventListener("change", async () => {
+  try {
+    const enabled = await window.flowPostAgent.setAutoLaunch(autoLaunch.checked);
+    autoLaunch.checked = Boolean(enabled);
+    setStatus(
+      enabled
+        ? "Agent будет запускаться при входе в систему."
+        : "Автозапуск Agent отключен.",
+    );
+  } catch (error) {
+    autoLaunch.checked = !autoLaunch.checked;
+    setStatus(normalizeError(error, "Не удалось изменить автозапуск."));
+  }
 });

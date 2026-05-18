@@ -5,6 +5,9 @@ contextBridge.exposeInMainWorld("flowPostAgent", {
   prepareBrowser: () => ipcRenderer.invoke("agent:prepare-browser"),
   pair: (payload) => ipcRenderer.invoke("agent:pair", payload),
   disconnect: () => ipcRenderer.invoke("agent:disconnect"),
+  setAutoLaunch: (enabled) =>
+    ipcRenderer.invoke("agent:set-auto-launch", enabled),
+  getAutoLaunch: () => ipcRenderer.invoke("agent:get-auto-launch"),
   deleteProfiles: () => ipcRenderer.invoke("agent:delete-profiles"),
   openProfiles: () => ipcRenderer.invoke("agent:open-profiles"),
   onState: (callback) =>

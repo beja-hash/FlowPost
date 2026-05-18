@@ -506,7 +506,7 @@ export function ArticleEditorPage({
           body: JSON.stringify({ articleId: savedAsset.id }),
         });
         const body = (await response.json()) as {
-          status?: "requires_agent" | "queued";
+          status?: "requires_agent" | "queued" | "busy";
           message?: string;
           job?: { id: string };
           error?: { message?: string };
@@ -554,7 +554,7 @@ export function ArticleEditorPage({
           body: JSON.stringify({ articleId: savedAsset.id, publishAt }),
         });
         const body = (await response.json()) as {
-          status?: "requires_agent" | "queued";
+          status?: "requires_agent" | "queued" | "busy";
           message?: string;
           job?: { id: string };
           error?: { message?: string };
@@ -592,7 +592,7 @@ export function ArticleEditorPage({
           body: JSON.stringify({ articleId: savedAsset.id }),
         });
         const body = (await response.json()) as {
-          status?: "requires_agent" | "queued";
+          status?: "requires_agent" | "queued" | "busy";
           message?: string;
           job?: { id: string };
           error?: { message?: string };
@@ -609,6 +609,13 @@ export function ArticleEditorPage({
           toast.info(
             body.message ??
               "Подключите FlowPost Agent, чтобы открыть браузер на вашем компьютере.",
+          );
+          return;
+        }
+
+        if (body.status === "busy") {
+          toast.info(
+            body.message ?? "Agent уже выполняет задачу. Дождитесь завершения.",
           );
           return;
         }

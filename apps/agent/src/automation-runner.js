@@ -30,6 +30,8 @@ function createAutomationRunner({ app, sendState, logJob }) {
   let activeContextClosed = true;
   let isLaunching = false;
   let launchPromise = null;
+  let browserState = "idle";
+  let chromiumReady = false;
 
   process.env.PLAYWRIGHT_BROWSERS_PATH = browserCachePath;
 
@@ -41,8 +43,15 @@ function createAutomationRunner({ app, sendState, logJob }) {
       activePage: Boolean(activePage),
       activeContextClosed,
       isLaunching,
+      browserState,
       ...extra,
     });
+  }
+
+  function setBrowserState(nextState, extra = {}) {
+    browserState = nextState;
+    sendState({ browserState, ...extra });
+    logRunner(`state:${nextState}`, extra);
   }
 
   function profilePath(platform) {
@@ -108,13 +117,20 @@ function createAutomationRunner({ app, sendState, logJob }) {
   }
 
   async function ensureChromium() {
+    if (chromiumReady) {
+      sendState({ browserInstallStatus: "ready" });
+      return;
+    }
+
     if (await hasChromium()) {
+      chromiumReady = true;
       sendState({ browserInstallStatus: "ready" });
       return;
     }
 
     try {
       await installChromium();
+      chromiumReady = true;
     } catch (error) {
       sendState({
         status: "browser_install_failed",
@@ -131,7 +147,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
   async function prewarm(platforms = ["dzen"]) {
     const uniquePlatforms = [...new Set(platforms.map(normalizePlatform))];
 
-    sendState({ status: "preparing_browser" });
+    setBrowserState("preparing", { status: "preparing_browser" });
     logRunner("prewarm:start", { platforms: uniquePlatforms });
     await ensureChromium();
     await Promise.all(
@@ -139,7 +155,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
         fs.mkdir(profilePath(platform), { recursive: true }),
       ),
     );
-    sendState({ status: "browser_ready" });
+    setBrowserState("idle", { status: "browser_ready" });
     logRunner("prewarm:ready", { platforms: uniquePlatforms });
   }
 
@@ -151,6 +167,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
     activePage = null;
     activePlatform = null;
     activeContextClosed = true;
+    setBrowserState("closed");
   }
 
   async function closeActiveContext() {
@@ -196,6 +213,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
 
     if (contextLooksUsable(normalizedPlatform)) {
       logRunner("context:reuse", { platform: normalizedPlatform });
+      setBrowserState("opened", { status: "browser_already_opened" });
       return activeContext;
     }
 
@@ -207,6 +225,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
       logRunner("context:await-existing-launch", {
         platform: normalizedPlatform,
       });
+      setBrowserState("busy", { status: "browser_already_launching" });
       return launchPromise;
     }
 
@@ -220,7 +239,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
     isLaunching = true;
     activePlatform = normalizedPlatform;
     activeContextClosed = true;
-    sendState({ status: "launching_browser" });
+    setBrowserState("launching", { status: "launching_browser" });
     logRunner("context:launch:start", {
       platform: normalizedPlatform,
       userDataDir,
@@ -235,6 +254,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
       .then((context) => {
         activeContext = context;
         activeContextClosed = false;
+        setBrowserState("opened", { status: "browser_opened" });
         context.once("close", () => {
           logRunner("context:closed", { platform: normalizedPlatform });
           clearActiveContext(context);
@@ -285,7 +305,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
     }
 
     await updateJobStatus(job.id, "running");
-    sendState({ status: "browser_opening" });
+    setBrowserState("running_job", { status: "browser_opening" });
 
     const context = await launchContext(platform);
     let finishedLogin;
@@ -353,7 +373,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
     await page.goto(connectUrl, { waitUntil: "domcontentloaded" });
     await updateJobStatus(job.id, "waiting_user_login");
     await logJob(job.id, "Браузер открыт локально. Ожидаем вход пользователя.");
-    sendState({ status: "browser_opened" });
+    setBrowserState("opened", { status: "browser_opened" });
 
     await loginFinished;
 
@@ -395,7 +415,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
     }
 
     await updateJobStatus(job.id, "running");
-    sendState({ status: "publishing" });
+    setBrowserState("running_job", { status: "publishing" });
 
     const { page } = await openPage(platform, editorUrl);
 
@@ -410,7 +430,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
         },
       });
       await logJob(job.id, "Публикация выполнена локально через Playwright.");
-      sendState({ status: "publish_completed" });
+      setBrowserState("idle", { status: "publish_completed" });
     } finally {
       await closeActiveContext();
     }

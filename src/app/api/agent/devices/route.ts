@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 
-import { listAgentDevices } from "@/features/agent/server/agent-service";
+import {
+  getAgentConnectionState,
+  listAgentDevices,
+} from "@/features/agent/server/agent-service";
 import { toAgentErrorResponse } from "@/features/agent/server/error-response";
 import { auth } from "@/infrastructure/auth/session";
 
@@ -25,9 +28,12 @@ export async function GET() {
       );
     }
 
-    const devices = await listAgentDevices(session.user.id);
+    const [devices, agent] = await Promise.all([
+      listAgentDevices(session.user.id),
+      getAgentConnectionState(session.user.id),
+    ]);
 
-    return NextResponse.json({ devices });
+    return NextResponse.json({ devices, agent });
   } catch (error) {
     return toAgentErrorResponse(error);
   }

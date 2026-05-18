@@ -59,6 +59,12 @@ label {
   color: #b8c0cc;
 }
 
+label.toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 input {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 12px;
@@ -66,6 +72,12 @@ input {
   color: #fff;
   padding: 12px;
   font: inherit;
+}
+
+input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  padding: 0;
 }
 
 button {

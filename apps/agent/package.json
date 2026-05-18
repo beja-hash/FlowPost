@@ -32,6 +32,14 @@
       "node_modules/playwright/**/*",
       "node_modules/playwright-core/**/*"
     ],
+    "protocols": [
+      {
+        "name": "FlowPost Agent",
+        "schemes": [
+          "flowpost-agent"
+        ]
+      }
+    ],
     "mac": {
       "target": "dmg",
       "artifactName": "FlowPost-Agent-${version}-${arch}.${ext}"

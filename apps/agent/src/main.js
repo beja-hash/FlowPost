@@ -1,4 +1,12 @@
-const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  ipcMain,
+  shell,
+  Tray,
+  Menu,
+  nativeImage,
+} = require("electron");
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
@@ -16,6 +24,17 @@ let prewarmPromise = null;
 let isPolling = false;
 let activeJobId = null;
 let runner;
+let tray;
+let isQuitting = false;
+let pendingPairingCode = null;
+let lastHeartbeatAt = null;
+let hiddenToTrayNoticeShown = false;
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!gotSingleInstanceLock) {
+  app.quit();
+}
 
 function browserDataRoot() {
   return runner?.profileRoot || path.join(app.getPath("appData"), "FlowPost", "browser-profiles");
@@ -92,8 +111,14 @@ function sendState(extra = {}) {
     browserCachePath: runner?.browserCachePath,
     platform: os.platform(),
     appVersion: APP_VERSION,
+    autoLaunch: getAutoLaunchEnabled(),
+    backgroundRunning: true,
+    lastHeartbeatAt,
+    activeJobId,
+    pairingCode: pendingPairingCode,
     ...extra,
   });
+  updateTrayMenu();
 }
 
 async function api(pathname, options = {}) {
@@ -146,7 +171,9 @@ async function sendHeartbeat() {
       method: "POST",
       body: JSON.stringify({ appVersion: APP_VERSION }),
     });
+    lastHeartbeatAt = new Date().toISOString();
     logLifecycle("heartbeat:sent");
+    sendState({ status: "heartbeat_active" });
   } catch (error) {
     logLifecycle("heartbeat:failed", {
       error: error instanceof Error ? error.message : String(error),
@@ -258,23 +285,212 @@ function startPolling() {
   startHeartbeat();
   void prewarmBrowser();
   void pollJobs();
+  logLifecycle("polling:started");
 }
 
-function createWindow() {
+function createTrayIcon() {
+  return nativeImage.createFromDataURL(
+    "data:image/svg+xml;utf8," +
+      encodeURIComponent(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#111827"/><path d="M8 10h16v4H13v3h9v4h-9v5H8V10z" fill="#fff"/></svg>',
+      ),
+  );
+}
+
+function updateTrayMenu() {
+  if (!tray) return;
+
+  const connected = Boolean(settings.agentToken);
+  const statusLabel = connected ? "Статус: подключен" : "Статус: не подключен";
+
+  tray.setToolTip("FlowPost Agent");
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      {
+        label: "Открыть FlowPost Agent",
+        click: () => showMainWindow(),
+      },
+      {
+        label: statusLabel,
+        enabled: false,
+      },
+      {
+        label: "Открыть браузер",
+        enabled: connected,
+        click: () => {
+          void runner
+            ?.launchDetachedBrowser("dzen", "about:blank")
+            .catch((error) => {
+              sendState({
+                status: "error",
+                error: userSafeErrorMessage(
+                  error,
+                  "Не удалось открыть браузер.",
+                ),
+              });
+            });
+        },
+      },
+      { type: "separator" },
+      {
+        label: "Удалить локальные профили браузера",
+        click: () => {
+          void runner?.deleteProfiles().then(() => {
+            sendState({ status: "profiles_deleted" });
+          });
+        },
+      },
+      {
+        label: "Отключить Agent",
+        enabled: connected,
+        click: () => {
+          void disconnectAgent();
+        },
+      },
+      { type: "separator" },
+      {
+        label: "Выйти",
+        click: () => quitAgent(),
+      },
+    ]),
+  );
+}
+
+function createTray() {
+  if (tray) return;
+  tray = new Tray(createTrayIcon());
+  tray.on("click", () => showMainWindow());
+  updateTrayMenu();
+  logLifecycle("tray:initialized");
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow({ show: true });
+    return;
+  }
+
+  mainWindow.show();
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+}
+
+function createWindow({ show = true } = {}) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (show) showMainWindow();
+    return;
+  }
+
   mainWindow = new BrowserWindow({
     width: 960,
     height: 720,
     title: "FlowPost Agent",
+    show,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
     },
   });
+
+  mainWindow.on("close", (event) => {
+    if (isQuitting) return;
+
+    event.preventDefault();
+    logLifecycle("app:hidden-to-tray");
+    if (!hiddenToTrayNoticeShown) {
+      hiddenToTrayNoticeShown = true;
+      sendState({
+        status: "background_running",
+        backgroundNotice:
+          "Agent продолжит работать в фоне. Чтобы полностью выйти, используйте меню в панели.",
+      });
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+      }, 1200);
+      return;
+    }
+
+    mainWindow.hide();
+  });
+
   mainWindow.on("closed", () => {
-    logLifecycle("main-window:closed");
+    logLifecycle("main-window:destroyed");
     mainWindow = null;
-    stopAgentLoops();
   });
   mainWindow.loadFile(path.join(__dirname, "renderer.html"));
+}
+
+function getAutoLaunchEnabled() {
+  return app.getLoginItemSettings().openAtLogin;
+}
+
+function setAutoLaunch(enabled) {
+  settings.autoLaunch = enabled;
+  app.setLoginItemSettings({
+    openAtLogin: enabled,
+    openAsHidden: enabled,
+    args: enabled ? ["--background"] : [],
+  });
+  logLifecycle("autostart:set", { enabled });
+  updateTrayMenu();
+}
+
+async function disconnectAgent() {
+  await writeSettings({ agentToken: null, account: null });
+  stopAgentLoops();
+  updateTrayMenu();
+}
+
+function quitAgent() {
+  logLifecycle("app:quit-from-tray");
+  isQuitting = true;
+  stopAgentLoops();
+  void runner?.dispose?.();
+  app.quit();
+}
+
+function registerProtocol() {
+  if (process.defaultApp && process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient("flowpost-agent", process.execPath, [
+      path.resolve(process.argv[1]),
+    ]);
+  } else {
+    app.setAsDefaultProtocolClient("flowpost-agent");
+  }
+}
+
+function handleProtocolUrl(url) {
+  if (!url?.startsWith("flowpost-agent://")) return;
+
+  logLifecycle("protocol:received", { url });
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (error) {
+    logLifecycle("protocol:invalid", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+
+  const action = parsed.hostname || parsed.pathname.replace(/^\//, "");
+  const code = parsed.searchParams.get("code");
+
+  if (action === "pair" && code) {
+    pendingPairingCode = code;
+  }
+
+  showMainWindow();
+  sendState({
+    status: "protocol_opened",
+    protocolAction: action,
+    pairingCode: pendingPairingCode,
+    protocolPlatform: parsed.searchParams.get("platform"),
+  });
+}
+
+function handleProtocolArgv(argv) {
+  const protocolArg = argv.find((arg) => arg.startsWith("flowpost-agent://"));
+  if (protocolArg) handleProtocolUrl(protocolArg);
 }
 
 ipcMain.handle("agent:get-state", async () => {
@@ -287,6 +503,11 @@ ipcMain.handle("agent:get-state", async () => {
     browserCachePath: runner?.browserCachePath,
     platform: os.platform(),
     appVersion: APP_VERSION,
+    autoLaunch: getAutoLaunchEnabled(),
+    backgroundRunning: true,
+    lastHeartbeatAt,
+    activeJobId,
+    pairingCode: pendingPairingCode,
   };
 });
 
@@ -317,7 +538,13 @@ ipcMain.handle("agent:pair", async (_event, payload) => {
       agentToken: result.token,
       account: result.device?.name || "FlowPost",
     });
+    if (settings.autoLaunch !== false) {
+      setAutoLaunch(true);
+      await writeSettings({ autoLaunch: true });
+    }
+    pendingPairingCode = null;
     startPolling();
+    logLifecycle("paired", { deviceId: result.device?.id ?? null });
     return result;
   } catch (error) {
     throw new Error(
@@ -327,10 +554,17 @@ ipcMain.handle("agent:pair", async (_event, payload) => {
 });
 
 ipcMain.handle("agent:disconnect", async () => {
-  await writeSettings({ agentToken: null, account: null });
-  stopAgentLoops();
+  await disconnectAgent();
   return true;
 });
+
+ipcMain.handle("agent:set-auto-launch", async (_event, enabled) => {
+  setAutoLaunch(Boolean(enabled));
+  await writeSettings({ autoLaunch: Boolean(enabled) });
+  return getAutoLaunchEnabled();
+});
+
+ipcMain.handle("agent:get-auto-launch", async () => getAutoLaunchEnabled());
 
 ipcMain.handle("agent:delete-profiles", async () => {
   try {
@@ -349,21 +583,40 @@ ipcMain.handle("agent:open-profiles", async () => {
   await shell.openPath(browserDataRoot());
 });
 
+app.on("second-instance", (_event, argv) => {
+  logLifecycle("single-instance:second-instance", { argv });
+  handleProtocolArgv(argv);
+  showMainWindow();
+});
+
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  handleProtocolUrl(url);
+});
+
 app.whenReady().then(async () => {
+  registerProtocol();
   runner = createAutomationRunner({ app, sendState, logJob });
   await readSettings();
-  createWindow();
+  setAutoLaunch(settings.autoLaunch === true);
+  createTray();
+  createWindow({ show: !process.argv.includes("--background") });
+  handleProtocolArgv(process.argv);
   mainWindow.webContents.once("did-finish-load", () => {
     sendState();
     if (settings.agentToken) startPolling();
   });
+  logLifecycle("app:started", {
+    background: process.argv.includes("--background"),
+  });
 });
 
 app.on("before-quit", () => {
+  isQuitting = true;
   stopAgentLoops();
   void runner?.dispose?.();
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  // Keep the Agent alive in tray/menu bar so heartbeat and job polling continue.
 });

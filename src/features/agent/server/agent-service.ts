@@ -79,6 +79,76 @@ export function publicAgentDevice(device: AgentDevice) {
   };
 }
 
+export function isAgentDeviceFresh(device: Pick<AgentDevice, "lastSeenAt">) {
+  return Boolean(
+    device.lastSeenAt &&
+      device.lastSeenAt.getTime() >= Date.now() - ACTIVE_AGENT_WINDOW_MS,
+  );
+}
+
+export async function getAgentConnectionState(userId: string) {
+  const latestDevice = await prisma.agentDevice.findFirst({
+    where: {
+      userId,
+      status: AgentDeviceStatus.ACTIVE,
+    },
+    orderBy: [{ lastSeenAt: "desc" }, { createdAt: "desc" }],
+  });
+
+  if (!latestDevice) {
+    console.log("[agent-service] state", {
+      userId,
+      state: "none",
+      activeAgent: false,
+      lastSeenAt: null,
+    });
+
+    return {
+      state: "none" as const,
+      device: null,
+      busyJob: null,
+      lastSeenAt: null,
+    };
+  }
+
+  const active = isAgentDeviceFresh(latestDevice);
+  const busyJob = active
+    ? await prisma.agentJob.findFirst({
+        where: {
+          userId,
+          agentDeviceId: latestDevice.id,
+          status: {
+            in: [
+              AgentJobStatus.PICKED_UP,
+              AgentJobStatus.RUNNING,
+              AgentJobStatus.WAITING_USER_LOGIN,
+            ],
+          },
+        },
+        orderBy: {
+          updatedAt: "desc",
+        },
+      })
+    : null;
+  const state = active ? (busyJob ? "busy" : "active") : "offline";
+
+  console.log("[agent-service] state", {
+    userId,
+    state,
+    activeAgent: active,
+    deviceId: latestDevice.id,
+    lastSeenAt: latestDevice.lastSeenAt,
+    busyJobId: busyJob?.id ?? null,
+  });
+
+  return {
+    state,
+    device: publicAgentDevice(latestDevice),
+    busyJob: busyJob ? publicAgentJob(busyJob) : null,
+    lastSeenAt: latestDevice.lastSeenAt?.toISOString() ?? null,
+  };
+}
+
 export async function createPairingCodeForUser(userId: string) {
   const code = createPairingCode();
   const expiresAt = new Date(Date.now() + PAIRING_TTL_MINUTES * 60 * 1000);
@@ -272,20 +342,67 @@ export async function createConnectPlatformJob({
     );
   }
 
-  const activeDevice = await getActiveAgentDevice(userId);
+  const agent = await getAgentConnectionState(userId);
+  const activeDevice =
+    agent.state === "active" || agent.state === "busy"
+      ? await getActiveAgentDevice(userId)
+      : null;
 
   if (!activeDevice) {
     console.log("[agent-service] connect-job:requires-agent", {
       userId,
       platform: config.slug,
+      agentState: agent.state,
     });
 
     return {
       status: "requires_agent" as const,
       message:
-        "FlowPost Agent не подключен. Откройте Agent или создайте новый код подключения.",
+        agent.state === "offline"
+          ? "FlowPost Agent не запущен. Откройте приложение FlowPost Agent и повторите действие."
+          : "Для запуска браузера установите и подключите FlowPost Agent.",
+      agentState: agent.state,
       agentDevice: null,
       job: null,
+    };
+  }
+
+  if (agent.state === "busy") {
+    return {
+      status: "busy" as const,
+      message: "Agent уже выполняет задачу. Дождитесь завершения.",
+      agentState: agent.state,
+      agentDevice: publicAgentDevice(activeDevice),
+      job: agent.busyJob,
+    };
+  }
+
+  const existingJob = await prisma.agentJob.findFirst({
+    where: {
+      userId,
+      type: AgentJobType.CONNECT_PLATFORM,
+      platform: config.slug,
+      status: {
+        in: [
+          AgentJobStatus.QUEUED,
+          AgentJobStatus.PICKED_UP,
+          AgentJobStatus.RUNNING,
+          AgentJobStatus.WAITING_USER_LOGIN,
+        ],
+      },
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+  });
+
+  if (existingJob) {
+    return {
+      status: "busy" as const,
+      message: "Браузер уже запускается или Agent выполняет задачу.",
+      agentState: "busy" as const,
+      agentDevice: publicAgentDevice(activeDevice),
+      job: publicAgentJob(existingJob),
     };
   }
 
@@ -317,6 +434,7 @@ export async function createConnectPlatformJob({
     status: "queued" as const,
     message:
       "Задание создано. FlowPost Agent откроет браузер на вашем компьютере.",
+    agentState: agent.state,
     agentDevice: publicAgentDevice(activeDevice),
     job: publicAgentJob(job),
   };
@@ -395,21 +513,71 @@ export async function createPublishArticleJob({
     );
   }
 
-  const activeDevice = await getActiveAgentDevice(userId);
+  const agent = await getAgentConnectionState(userId);
+  const activeDevice =
+    agent.state === "active" || agent.state === "busy"
+      ? await getActiveAgentDevice(userId)
+      : null;
 
   if (!activeDevice) {
     console.log("[agent-service] publish-job:requires-agent", {
       userId,
       articleId,
       platform: config.slug,
+      agentState: agent.state,
     });
 
     return {
       status: "requires_agent" as const,
       message:
-        "Подключите FlowPost Agent, чтобы открыть браузер на вашем компьютере.",
+        agent.state === "offline"
+          ? "FlowPost Agent не запущен. Откройте Agent и повторите публикацию."
+          : "Для публикации установите и подключите FlowPost Agent.",
+      agentState: agent.state,
       agentDevice: null,
       job: null,
+    };
+  }
+
+  if (agent.state === "busy") {
+    return {
+      status: "busy" as const,
+      message: "Agent уже выполняет задачу. Дождитесь завершения.",
+      agentState: agent.state,
+      agentDevice: publicAgentDevice(activeDevice),
+      job: agent.busyJob,
+    };
+  }
+
+  const existingJob = await prisma.agentJob.findFirst({
+    where: {
+      userId,
+      type: AgentJobType.PUBLISH_ARTICLE,
+      status: {
+        in: [
+          AgentJobStatus.QUEUED,
+          AgentJobStatus.PICKED_UP,
+          AgentJobStatus.RUNNING,
+          AgentJobStatus.WAITING_USER_LOGIN,
+        ],
+      },
+      payload: {
+        path: ["articleId"],
+        equals: article.id,
+      },
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+  });
+
+  if (existingJob) {
+    return {
+      status: "busy" as const,
+      message: "Публикация уже отправлена в Agent.",
+      agentState: "busy" as const,
+      agentDevice: publicAgentDevice(activeDevice),
+      job: publicAgentJob(existingJob),
     };
   }
 
@@ -468,6 +636,7 @@ export async function createPublishArticleJob({
     status: "queued" as const,
     message:
       "Задание публикации создано. FlowPost Agent откроет браузер на вашем компьютере.",
+    agentState: agent.state,
     agentDevice: publicAgentDevice(activeDevice),
     job: publicAgentJob(job),
   };

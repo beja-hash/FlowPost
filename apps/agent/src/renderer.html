@@ -36,6 +36,26 @@
       </section>
 
       <section class="card trust">
+        <h2>Фоновая работа</h2>
+        <p>
+          FlowPost Agent работает в фоне и открывает браузер, когда вы
+          запускаете публикацию из веб-кабинета.
+        </p>
+        <label class="toggle">
+          <input id="autoLaunch" type="checkbox" />
+          Запускать FlowPost Agent при входе в систему
+        </label>
+        <ul>
+          <li id="backgroundStatus">Agent работает в фоне</li>
+          <li id="heartbeatStatus">Heartbeat ожидает подключения</li>
+          <li>
+            Последняя связь с FlowPost:
+            <span id="lastHeartbeat">нет данных</span>
+          </li>
+        </ul>
+      </section>
+
+      <section class="card trust">
         <h2>Ваши данные остаются на вашем компьютере</h2>
         <p>
           FlowPost Agent запускает браузер локально на вашем устройстве. Сессии
