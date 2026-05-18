@@ -71,10 +71,10 @@ type AgentConnectState = {
 };
 
 const agentStatusLabels: Record<AgentJobStatus, string> = {
-  queued: "Ожидает запуска FlowPost Agent",
-  picked_up: "Agent получил задание",
-  running: "Agent запускает браузер",
-  waiting_user_login: "Браузер открыт на вашем компьютере",
+  queued: "Задача отправлена в Agent",
+  picked_up: "Открываем браузер на вашем компьютере...",
+  running: "Открываем браузер на вашем компьютере...",
+  waiting_user_login: "Браузер открыт. Ожидаем входа в платформу",
   completed: "Подключение завершено",
   failed: "Ошибка подключения",
   cancelled: "Подключение отменено",
@@ -146,6 +146,20 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
       console.error("[platform-agent-status]", error);
     }
   }
+
+  useEffect(() => {
+    const initialRefresh = window.setTimeout(() => {
+      void refreshAgentDevices();
+    }, 0);
+    const interval = window.setInterval(() => {
+      void refreshAgentDevices();
+    }, 10_000);
+
+    return () => {
+      window.clearTimeout(initialRefresh);
+      window.clearInterval(interval);
+    };
+  }, []);
 
   useEffect(() => {
     if (!agentConnect?.job.id || agentConnect.job.status === "completed") {
@@ -225,13 +239,13 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
       if (body.status === "requires_agent" || !body.job) {
         toast.info(
           body.message ??
-            "Чтобы открыть браузер на вашем компьютере, установите FlowPost Agent.",
+            "FlowPost Agent не подключен. Откройте Agent или создайте новый код подключения.",
         );
         return;
       }
 
       setAgentConnect({ job: body.job });
-      toast.info("Agent подключен. Задание на открытие браузера создано.");
+      toast.info("Задача отправлена в Agent.");
     } catch (error) {
       toast.error(
         error instanceof Error
@@ -258,24 +272,38 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
       });
 
       const body = (await response.json()) as {
-        platform?: PlatformConnection;
+        status?: "requires_agent" | "queued";
+        message?: string;
+        agentDevice?: AgentDevice | null;
+        job?: AgentJob;
         error?: {
           message?: string;
         };
       };
 
-      if (!response.ok || !body.platform) {
+      if (!response.ok) {
         throw new Error(
           body.error?.message ?? "Не удалось запустить платформу.",
         );
       }
 
-      toast.success("Сессия платформы запущена.");
+      if (body.status === "requires_agent" || !body.job) {
+        setSelectedPlatform(platform);
+        toast.info(
+          body.message ??
+            "FlowPost Agent не подключен. Откройте Agent или создайте новый код подключения.",
+        );
+        return;
+      }
+
+      setSelectedPlatform(platform);
+      setAgentConnect({ job: body.job });
+      toast.info("Открываем браузер на вашем компьютере...");
     } catch (error) {
       toast.error(
         error instanceof Error
           ? error.message
-          : "Не удалось запустить платформу.",
+          : "Не удалось открыть браузер. Перезапустите Agent и попробуйте снова.",
       );
     } finally {
       setLaunchingPlatform(null);

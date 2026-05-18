@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z, ZodError } from "zod";
 
+import {
+  AgentServiceError,
+  createConnectPlatformJob,
+} from "@/features/agent/server/agent-service";
 import { auth } from "@/infrastructure/auth/session";
 import { platformSlugs } from "@/infrastructure/platforms/platform-registry";
 import { debugLog, debugWarn } from "@/lib/debug-log";
@@ -34,6 +38,20 @@ function toErrorResponse(error: unknown) {
       },
       {
         status: 400,
+      },
+    );
+  }
+
+  if (error instanceof AgentServiceError) {
+    return NextResponse.json(
+      {
+        error: {
+          code: error.code,
+          message: error.message,
+        },
+      },
+      {
+        status: error.statusCode,
       },
     );
   }
@@ -86,24 +104,24 @@ export async function POST(request: NextRequest) {
       platform: payload.platform,
     });
 
-    debugLog("[api/platforms/launch]", {
-      step: "desktop-agent-required",
+    const result = await createConnectPlatformJob({
       userId: session.user.id,
       platform: payload.platform,
     });
 
-    return NextResponse.json(
-      {
-        error: {
-          code: "DESKTOP_AGENT_REQUIRED",
-          message:
-            "Для запуска браузера подключите FlowPost Agent на компьютере пользователя.",
-        },
-      },
-      {
-        status: 409,
-      },
-    );
+    debugLog("[api/platforms/launch]", {
+      step: "agent-job:created",
+      userId: session.user.id,
+      platform: payload.platform,
+      status: result.status,
+      jobId: result.job?.id ?? null,
+      agentDeviceId: result.agentDevice?.id ?? null,
+    });
+
+    return NextResponse.json({
+      mode: "desktop_agent",
+      ...result,
+    });
   } catch (error) {
     return toErrorResponse(error);
   }

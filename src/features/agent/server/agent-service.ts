@@ -21,7 +21,7 @@ import { formatArticleForPlatform } from "@/services/article-formatting";
 
 const TOKEN_PREFIX = "fp_agent_";
 const PAIRING_TTL_MINUTES = 15;
-const ACTIVE_AGENT_WINDOW_MS = 2 * 60 * 1000;
+const ACTIVE_AGENT_WINDOW_MS = 60 * 1000;
 
 export class AgentServiceError extends Error {
   constructor(
@@ -172,7 +172,7 @@ export async function authenticateAgent(authorization: string | null) {
     );
   }
 
-  await prisma.agentDevice.update({
+  const updatedDevice = await prisma.agentDevice.update({
     where: {
       id: device.id,
     },
@@ -181,14 +181,24 @@ export async function authenticateAgent(authorization: string | null) {
     },
   });
 
-  return device;
+  console.log("[agent-service] heartbeat/authenticated", {
+    userId: updatedDevice.userId,
+    deviceId: updatedDevice.id,
+    lastSeenAt: updatedDevice.lastSeenAt,
+  });
+
+  return updatedDevice;
 }
 
 export async function listAgentDevices(userId: string) {
+  const cutoff = new Date(Date.now() - ACTIVE_AGENT_WINDOW_MS);
   const devices = await prisma.agentDevice.findMany({
     where: {
       userId,
       status: AgentDeviceStatus.ACTIVE,
+      lastSeenAt: {
+        gte: cutoff,
+      },
     },
     orderBy: [{ lastSeenAt: "desc" }, { createdAt: "desc" }],
   });
@@ -196,7 +206,7 @@ export async function listAgentDevices(userId: string) {
   return devices.map(publicAgentDevice);
 }
 
-export async function hasActiveAgentDevice(userId: string) {
+export async function getActiveAgentDevice(userId: string) {
   const cutoff = new Date(Date.now() - ACTIVE_AGENT_WINDOW_MS);
   const device = await prisma.agentDevice.findFirst({
     where: {
@@ -211,8 +221,18 @@ export async function hasActiveAgentDevice(userId: string) {
     },
   });
 
+  console.log("[agent-service] active-agent", {
+    userId,
+    found: Boolean(device),
+    deviceId: device?.id ?? null,
+    cutoff,
+    lastSeenAt: device?.lastSeenAt ?? null,
+  });
+
   return device;
 }
+
+export const hasActiveAgentDevice = getActiveAgentDevice;
 
 export async function revokeAgentDevice(userId: string, deviceId: string) {
   const device = await prisma.agentDevice.findFirst({
@@ -252,13 +272,18 @@ export async function createConnectPlatformJob({
     );
   }
 
-  const activeDevice = await hasActiveAgentDevice(userId);
+  const activeDevice = await getActiveAgentDevice(userId);
 
   if (!activeDevice) {
+    console.log("[agent-service] connect-job:requires-agent", {
+      userId,
+      platform: config.slug,
+    });
+
     return {
       status: "requires_agent" as const,
       message:
-        "Чтобы открыть браузер на вашем компьютере, установите и подключите FlowPost Agent.",
+        "FlowPost Agent не подключен. Откройте Agent или создайте новый код подключения.",
       agentDevice: null,
       job: null,
     };
@@ -278,6 +303,14 @@ export async function createConnectPlatformJob({
       },
       status: AgentJobStatus.QUEUED,
     },
+  });
+
+  console.log("[agent-service] connect-job:created", {
+    userId,
+    agentDeviceId: activeDevice.id,
+    jobId: job.id,
+    type: job.type,
+    platform: config.slug,
   });
 
   return {
@@ -362,13 +395,19 @@ export async function createPublishArticleJob({
     );
   }
 
-  const activeDevice = await hasActiveAgentDevice(userId);
+  const activeDevice = await getActiveAgentDevice(userId);
 
   if (!activeDevice) {
+    console.log("[agent-service] publish-job:requires-agent", {
+      userId,
+      articleId,
+      platform: config.slug,
+    });
+
     return {
       status: "requires_agent" as const,
       message:
-        "Установите FlowPost Agent, чтобы открыть браузер на вашем компьютере.",
+        "Подключите FlowPost Agent, чтобы открыть браузер на вашем компьютере.",
       agentDevice: null,
       job: null,
     };
@@ -414,6 +453,15 @@ export async function createPublishArticleJob({
         status: AgentJobStatus.QUEUED,
       },
     });
+  });
+
+  console.log("[agent-service] publish-job:created", {
+    userId,
+    articleId,
+    agentDeviceId: activeDevice.id,
+    jobId: job.id,
+    type: job.type,
+    platform: config.slug,
   });
 
   return {

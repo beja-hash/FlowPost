@@ -1,10 +1,7 @@
-import { spawn } from "node:child_process";
-
 import {
   getPlatformConfig,
   type PlatformSlug,
 } from "@/infrastructure/platforms/platform-registry";
-import { SessionManager } from "@/infrastructure/platforms/session-manager";
 import { debugLog } from "@/lib/debug-log";
 import type {
   PlatformEditorLaunchResult,
@@ -14,7 +11,6 @@ import type {
 type LaunchLogContext = {
   userId: string;
   platform: PlatformSlug;
-  profilePath: string;
   editorUrl: string;
 };
 
@@ -58,52 +54,18 @@ export function createUrlEditorService(
         throw new Error(`Unsupported platform: ${platform}`);
       }
 
-      const profilePath = SessionManager.profilePath(userId, config.id);
       const logContext = {
         userId,
         platform: config.id,
-        profilePath,
         editorUrl: config.editorUrl,
       };
 
-      logPlatformEditor("session_restore_started", logContext);
-
-      try {
-        const { chromium } = await import("playwright");
-        const executablePath = chromium.executablePath();
-
-        logPlatformEditor("browser_launch_started", logContext);
-        const browserProcess = spawn(
-          executablePath,
-          [
-            `--user-data-dir=${profilePath}`,
-            "--start-maximized",
-            config.editorUrl,
-          ],
-          {
-            detached: true,
-            stdio: "ignore",
-          },
-        );
-        browserProcess.unref();
-        logPlatformEditor("browser_launched", {
-          ...logContext,
-          executablePath,
-          controlledByPlaywright: false,
-        });
-        logPlatformEditor("editor_opened", {
-          ...logContext,
-          currentUrl: config.editorUrl,
-        });
-
-        return {
-          platform: config.id,
-          editorUrl: config.editorUrl,
-        };
-      } catch (error) {
-        logPlatformEditorError("editor_launch_failed", error, logContext);
-        throw error;
-      }
+      logPlatformEditor("desktop-agent-required", logContext);
+      const error = new Error(
+        "Подключите FlowPost Agent, чтобы открыть браузер на вашем компьютере.",
+      );
+      logPlatformEditorError("server-browser-launch-disabled", error, logContext);
+      throw error;
     },
   };
 }

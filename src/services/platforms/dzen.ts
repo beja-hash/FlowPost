@@ -5,16 +5,12 @@ import type {
 
 export const dzenPlatformService: PlatformEditorService = {
   async launchEditor(userId: string): Promise<PlatformEditorLaunchResult> {
-    const { DzenPublisher } = await import("@/platforms/dzen/publisher");
-    const publisher = new DzenPublisher();
-
-    await publisher.open({ userId });
-    await publisher.launch();
-    await publisher.navigateToEditor();
-
-    return {
+    console.warn("[platform-editor] server-browser-launch-disabled", {
+      userId,
       platform: "dzen",
-      editorUrl: publisher.getCurrentEditorUrl() ?? "https://dzen.ru",
-    };
+    });
+    throw new Error(
+      "Подключите FlowPost Agent, чтобы открыть браузер на вашем компьютере.",
+    );
   },
 };

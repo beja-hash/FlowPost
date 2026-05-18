@@ -266,6 +266,14 @@ export class VcPublisher implements BasePublisher {
       );
     }
 
+    if (process.env.FLOWPOST_ENABLE_SERVER_BROWSER !== "1") {
+      throw new VcPublisherError(
+        409,
+        "DESKTOP_AGENT_REQUIRED",
+        "Подключите FlowPost Agent, чтобы открыть браузер на вашем компьютере.",
+      );
+    }
+
     const chromium = await importChromium(this.logContext);
     globalForVcPublisher.vcPublisherContexts ??= new Map();
 

@@ -4,6 +4,13 @@ const path = require("node:path");
 
 const SUPPORTED_PLATFORMS = new Set(["dzen", "vc"]);
 
+class UserCancelledBrowserError extends Error {
+  constructor(message = "Браузер был закрыт пользователем.") {
+    super(message);
+    this.name = "UserCancelledBrowserError";
+  }
+}
+
 function normalizePlatform(platform) {
   const normalized = String(platform || "default")
     .trim()
@@ -17,8 +24,26 @@ function createAutomationRunner({ app, sendState, logJob }) {
   const flowPostDataPath = path.join(app.getPath("appData"), "FlowPost");
   const browserCachePath = path.join(flowPostDataPath, "ms-playwright");
   const profileRoot = path.join(flowPostDataPath, "browser-profiles");
+  let activeContext = null;
+  let activePage = null;
+  let activePlatform = null;
+  let activeContextClosed = true;
+  let isLaunching = false;
+  let launchPromise = null;
 
   process.env.PLAYWRIGHT_BROWSERS_PATH = browserCachePath;
+
+  function logRunner(action, extra = {}) {
+    console.log("[flowpost-agent:runner]", {
+      action,
+      activePlatform,
+      activeContext: Boolean(activeContext),
+      activePage: Boolean(activePage),
+      activeContextClosed,
+      isLaunching,
+      ...extra,
+    });
+  }
 
   function profilePath(platform) {
     return path.join(profileRoot, normalizePlatform(platform));
@@ -103,18 +128,152 @@ function createAutomationRunner({ app, sendState, logJob }) {
     }
   }
 
-  async function launchContext(platform) {
+  async function prewarm(platforms = ["dzen"]) {
+    const uniquePlatforms = [...new Set(platforms.map(normalizePlatform))];
+
+    sendState({ status: "preparing_browser" });
+    logRunner("prewarm:start", { platforms: uniquePlatforms });
+    await ensureChromium();
+    await Promise.all(
+      uniquePlatforms.map((platform) =>
+        fs.mkdir(profilePath(platform), { recursive: true }),
+      ),
+    );
+    sendState({ status: "browser_ready" });
+    logRunner("prewarm:ready", { platforms: uniquePlatforms });
+  }
+
+  function clearActiveContext(context) {
+    if (context && activeContext && context !== activeContext) return;
+
+    logRunner("context:clear");
+    activeContext = null;
+    activePage = null;
+    activePlatform = null;
+    activeContextClosed = true;
+  }
+
+  async function closeActiveContext() {
+    const context = activeContext;
+    clearActiveContext(context);
+
+    if (context) {
+      await context.close().catch((error) => {
+        logRunner("context:close:ignored-error", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+  }
+
+  function contextLooksUsable(platform) {
+    return (
+      activeContext &&
+      !activeContextClosed &&
+      activePlatform === platform
+    );
+  }
+
+  async function getOrCreatePage(context) {
+    if (activePage && !activePage.isClosed()) {
+      return activePage;
+    }
+
+    const existingPage = context.pages().find((page) => !page.isClosed());
+    activePage = existingPage ?? (await context.newPage());
+    activePage.once("close", () => {
+      if (activePage?.isClosed()) {
+        logRunner("page:closed");
+        activePage = null;
+      }
+    });
+
+    return activePage;
+  }
+
+  async function getOrLaunchContext(platform) {
+    const normalizedPlatform = normalizePlatform(platform);
+
+    if (contextLooksUsable(normalizedPlatform)) {
+      logRunner("context:reuse", { platform: normalizedPlatform });
+      return activeContext;
+    }
+
+    if (isLaunching && launchPromise) {
+      if (activePlatform && activePlatform !== normalizedPlatform) {
+        throw new Error("Браузер уже запускается для другой площадки.");
+      }
+
+      logRunner("context:await-existing-launch", {
+        platform: normalizedPlatform,
+      });
+      return launchPromise;
+    }
+
+    await closeActiveContext();
     await ensureChromium();
     const chromium = await getChromium();
-    const userDataDir = profilePath(platform);
+    const userDataDir = profilePath(normalizedPlatform);
 
     await fs.mkdir(userDataDir, { recursive: true });
 
-    return chromium.launchPersistentContext(userDataDir, {
-      headless: false,
-      args: ["--start-maximized"],
-      viewport: null,
+    isLaunching = true;
+    activePlatform = normalizedPlatform;
+    activeContextClosed = true;
+    sendState({ status: "launching_browser" });
+    logRunner("context:launch:start", {
+      platform: normalizedPlatform,
+      userDataDir,
     });
+
+    launchPromise = chromium
+      .launchPersistentContext(userDataDir, {
+        headless: false,
+        args: ["--start-maximized"],
+        viewport: null,
+      })
+      .then((context) => {
+        activeContext = context;
+        activeContextClosed = false;
+        context.once("close", () => {
+          logRunner("context:closed", { platform: normalizedPlatform });
+          clearActiveContext(context);
+          sendState({ status: "browser_closed" });
+        });
+        logRunner("context:launch:ready", { platform: normalizedPlatform });
+        return context;
+      })
+      .finally(() => {
+        isLaunching = false;
+        launchPromise = null;
+      });
+
+    return launchPromise;
+  }
+
+  async function launchContext(platform) {
+    const context = await getOrLaunchContext(platform);
+    await getOrCreatePage(context);
+    return context;
+  }
+
+  async function openPage(platform, url) {
+    const context = await getOrLaunchContext(platform);
+    const page = await getOrCreatePage(context);
+
+    if (page.isClosed()) {
+      activePage = null;
+      return openPage(platform, url);
+    }
+
+    await page.goto(url, { waitUntil: "domcontentloaded" });
+    return { context, page };
+  }
+
+  async function launchDetachedBrowser(platform, url) {
+    const { context, page } = await openPage(platform, url);
+    sendState({ status: "browser_opened" });
+    return { context, page };
   }
 
   async function runConnectPlatformJob(job, updateJobStatus) {
@@ -135,14 +294,24 @@ function createAutomationRunner({ app, sendState, logJob }) {
       finishedLogin = resolve;
     });
 
-    context.on("close", () => {
+    context.once("close", () => {
       browserClosed = true;
       finishedLogin();
     });
 
-    await context.exposeBinding("__flowPostFinishPlatformConnection", () => {
-      finishedLogin();
-    });
+    await context
+      .exposeBinding("__flowPostFinishPlatformConnection", () => {
+        finishedLogin();
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+
+        if (!message.includes("__flowPostFinishPlatformConnection")) {
+          throw error;
+        }
+
+        logRunner("binding:finish-already-registered");
+      });
 
     await context.addInitScript(() => {
       const installFinishButton = () => {
@@ -180,7 +349,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
       installFinishButton();
     });
 
-    const page = context.pages()[0] ?? (await context.newPage());
+    const page = await getOrCreatePage(context);
     await page.goto(connectUrl, { waitUntil: "domcontentloaded" });
     await updateJobStatus(job.id, "waiting_user_login");
     await logJob(job.id, "Браузер открыт локально. Ожидаем вход пользователя.");
@@ -189,7 +358,17 @@ function createAutomationRunner({ app, sendState, logJob }) {
     await loginFinished;
 
     if (browserClosed) {
-      throw new Error("Браузер закрыт до подтверждения подключения.");
+      await updateJobStatus(job.id, "cancelled", {
+        error: "Браузер был закрыт до подтверждения подключения.",
+      }).catch(() => undefined);
+      await logJob(
+        job.id,
+        "Браузер закрыт пользователем до подтверждения подключения.",
+        "warning",
+      );
+      throw new UserCancelledBrowserError(
+        "Браузер был закрыт. Нажмите “Открыть браузер” еще раз.",
+      );
     }
 
     await updateJobStatus(job.id, "completed", {
@@ -199,7 +378,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
       },
     });
     await logJob(job.id, "Подключение завершено. Cookies остались локально.");
-    await context.close();
+    await closeActiveContext();
     sendState({ status: "connected" });
   }
 
@@ -218,11 +397,9 @@ function createAutomationRunner({ app, sendState, logJob }) {
     await updateJobStatus(job.id, "running");
     sendState({ status: "publishing" });
 
-    const context = await launchContext(platform);
-    const page = context.pages()[0] ?? (await context.newPage());
+    const { page } = await openPage(platform, editorUrl);
 
     try {
-      await page.goto(editorUrl, { waitUntil: "domcontentloaded" });
       await fillArticle(page, platform, title, body);
 
       await updateJobStatus(job.id, "completed", {
@@ -235,7 +412,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
       await logJob(job.id, "Публикация выполнена локально через Playwright.");
       sendState({ status: "publish_completed" });
     } finally {
-      await context.close().catch(() => undefined);
+      await closeActiveContext();
     }
   }
 
@@ -274,15 +451,24 @@ function createAutomationRunner({ app, sendState, logJob }) {
   }
 
   async function deleteProfiles() {
+    await closeActiveContext();
     await fs.rm(profileRoot, { recursive: true, force: true });
+  }
+
+  async function dispose() {
+    await closeActiveContext();
   }
 
   return {
     browserCachePath,
     ensureChromium,
+    prewarm,
     deleteProfiles,
+    dispose,
     profilePath,
     profileRoot,
+    isUserCancelledError: (error) => error instanceof UserCancelledBrowserError,
+    launchDetachedBrowser,
     runConnectPlatformJob,
     runPublishArticleJob,
   };

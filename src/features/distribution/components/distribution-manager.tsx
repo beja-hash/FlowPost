@@ -145,7 +145,12 @@ export function DistributionManager({
           ...payload,
         }),
       });
-      const body = (await response.json()) as { error?: { message?: string } };
+      const body = (await response.json()) as {
+        status?: "requires_agent" | "queued";
+        message?: string;
+        job?: { id: string };
+        error?: { message?: string };
+      };
 
       if (!response.ok) {
         throw new Error(
@@ -154,7 +159,16 @@ export function DistributionManager({
       }
 
       await reloadAssets(assetId);
-      toast.success(successMessage);
+      if (body.status === "requires_agent") {
+        toast.info(
+          body.message ??
+            "Подключите FlowPost Agent, чтобы открыть браузер на вашем компьютере.",
+        );
+      } else if (endpoint === "/api/articles/publish" && body.job) {
+        toast.success("Задача отправлена в FlowPost Agent.");
+      } else {
+        toast.success(successMessage);
+      }
     } catch (error) {
       toast.error(
         error instanceof Error

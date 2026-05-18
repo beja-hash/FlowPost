@@ -538,6 +538,14 @@ export class DzenPublisher implements BasePublisher {
     const logContext = this.logContext;
     const userId = this.userId;
 
+    if (process.env.FLOWPOST_ENABLE_SERVER_BROWSER !== "1") {
+      throw new DzenPublisherError(
+        409,
+        "DESKTOP_AGENT_REQUIRED",
+        "Подключите FlowPost Agent, чтобы открыть браузер на вашем компьютере.",
+      );
+    }
+
     const chromium = await importChromium(logContext);
     globalForDzenPublisher.dzenPublisherContexts ??= new Map();
 
