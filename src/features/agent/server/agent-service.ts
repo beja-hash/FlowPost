@@ -22,6 +22,7 @@ import { formatArticleForPlatform } from "@/services/article-formatting";
 const TOKEN_PREFIX = "fp_agent_";
 const PAIRING_TTL_MINUTES = 15;
 const ACTIVE_AGENT_WINDOW_MS = 60 * 1000;
+const STALE_RUNNING_JOB_MS = 10 * 60 * 1000;
 
 export class AgentServiceError extends Error {
   constructor(
@@ -87,6 +88,8 @@ export function isAgentDeviceFresh(device: Pick<AgentDevice, "lastSeenAt">) {
 }
 
 export async function getAgentConnectionState(userId: string) {
+  await cleanupStaleAgentJobs(userId);
+
   const latestDevice = await prisma.agentDevice.findFirst({
     where: {
       userId,
@@ -130,7 +133,7 @@ export async function getAgentConnectionState(userId: string) {
         },
       })
     : null;
-  const state = active ? (busyJob ? "busy" : "active") : "offline";
+  const state = active ? (busyJob ? "busy" : "active") : "paired_offline";
 
   console.log("[agent-service] state", {
     userId,
@@ -165,6 +168,60 @@ export async function createPairingCodeForUser(userId: string) {
     code,
     expiresAt: expiresAt.toISOString(),
   };
+}
+
+export async function cleanupStaleAgentJobs(userId?: string) {
+  const cutoff = new Date(Date.now() - STALE_RUNNING_JOB_MS);
+  const runningResult = await prisma.agentJob.updateMany({
+    where: {
+      ...(userId ? { userId } : {}),
+      status: {
+        in: [
+          AgentJobStatus.PICKED_UP,
+          AgentJobStatus.RUNNING,
+          AgentJobStatus.WAITING_USER_LOGIN,
+        ],
+      },
+      updatedAt: {
+        lt: cutoff,
+      },
+    },
+    data: {
+      status: AgentJobStatus.FAILED,
+      completedAt: new Date(),
+      error:
+        "Задача была остановлена: Agent долго не присылал обновления статуса.",
+    },
+  });
+
+  const queuedResult = await prisma.agentJob.updateMany({
+    where: {
+      ...(userId ? { userId } : {}),
+      status: AgentJobStatus.QUEUED,
+      createdAt: {
+        lt: cutoff,
+      },
+      OR: [
+        { type: AgentJobType.CONNECT_PLATFORM },
+        { agentDeviceId: { not: null } },
+      ],
+    },
+    data: {
+      status: AgentJobStatus.FAILED,
+      completedAt: new Date(),
+      error:
+        "Задача была остановлена: Agent не забрал ее в течение длительного времени.",
+    },
+  });
+
+  if (runningResult.count > 0 || queuedResult.count > 0) {
+    console.log("[agent-service] stale-jobs:cleaned", {
+      userId: userId ?? null,
+      runningCount: runningResult.count,
+      queuedCount: queuedResult.count,
+      cutoff,
+    });
+  }
 }
 
 export async function confirmPairingCode({
@@ -325,6 +382,21 @@ export async function revokeAgentDevice(userId: string, deviceId: string) {
   return publicAgentDevice(revoked);
 }
 
+export async function revokeAuthenticatedAgent(authorization: string | null) {
+  const device = await authenticateAgent(authorization);
+  const revoked = await prisma.agentDevice.update({
+    where: { id: device.id },
+    data: { status: AgentDeviceStatus.REVOKED, revokedAt: new Date() },
+  });
+
+  console.log("[agent-service] agent-device:revoked-by-agent", {
+    userId: revoked.userId,
+    deviceId: revoked.id,
+  });
+
+  return publicAgentDevice(revoked);
+}
+
 export async function createConnectPlatformJob({
   userId,
   platform,
@@ -358,8 +430,8 @@ export async function createConnectPlatformJob({
     return {
       status: "requires_agent" as const,
       message:
-        agent.state === "offline"
-          ? "FlowPost Agent не запущен. Откройте приложение FlowPost Agent и повторите действие."
+        agent.state === "paired_offline"
+          ? "FlowPost Agent не запущен. Мы попробуем открыть его автоматически."
           : "Для запуска браузера установите и подключите FlowPost Agent.",
       agentState: agent.state,
       agentDevice: null,
@@ -521,7 +593,7 @@ export async function createPublishArticleJob({
       ? await getActiveAgentDevice(userId)
       : null;
 
-  if (!activeDevice && !allowOfflineQueue) {
+  if (!activeDevice && (agent.state === "none" || !allowOfflineQueue)) {
     console.log("[agent-service] publish-job:requires-agent", {
       userId,
       articleId,
@@ -532,8 +604,8 @@ export async function createPublishArticleJob({
     return {
       status: "requires_agent" as const,
       message:
-        agent.state === "offline"
-          ? "FlowPost Agent не запущен. Откройте Agent и повторите публикацию."
+        agent.state === "paired_offline"
+          ? "FlowPost Agent не запущен. Мы попробуем открыть его автоматически."
           : "Для публикации установите и подключите FlowPost Agent.",
       agentState: agent.state,
       agentDevice: null,
@@ -646,6 +718,7 @@ export async function createPublishArticleJob({
 
 export async function getNextAgentJob(authorization: string | null) {
   const device = await authenticateAgent(authorization);
+  await cleanupStaleAgentJobs(device.userId);
 
   const job = await prisma.agentJob.findFirst({
     where: {

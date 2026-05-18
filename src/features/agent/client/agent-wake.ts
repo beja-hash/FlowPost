@@ -1,6 +1,6 @@
 "use client";
 
-export type AgentStateName = "none" | "offline" | "active" | "busy";
+export type AgentStateName = "none" | "paired_offline" | "active" | "busy";
 
 export type AgentConnectionState = {
   state: AgentStateName;
@@ -63,8 +63,13 @@ export async function openAgentAndWait({
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const agent = await fetchAgentState();
 
-    if (agent.state === "active" || agent.state === "busy") {
+    if (agent.state === "active") {
       onStatus?.("Agent запущен. Отправляем задачу...");
+      return agent;
+    }
+
+    if (agent.state === "busy") {
+      onStatus?.("Agent выполняет задачу. Дождитесь завершения.");
       return agent;
     }
 

@@ -137,7 +137,7 @@ export function DistributionManager({
           return;
         }
 
-        if (agent.state === "offline") {
+        if (agent.state === "paired_offline") {
           toast.info("FlowPost Agent не запущен. Мы попробуем открыть его автоматически.");
           toast.info(agentProtocolHint);
           const nextAgent = await openAgentAndWait({
@@ -195,7 +195,7 @@ export function DistributionManager({
       } else if (body.status === "busy") {
         toast.info(body.message ?? "Agent уже выполняет задачу. Дождитесь завершения.");
       } else if (endpoint === "/api/articles/publish" && body.job) {
-        toast.success("Задача отправлена в FlowPost Agent.");
+        toast.success("Публикация отправлена в FlowPost Agent. Браузер не будет показываться.");
       } else {
         toast.success(successMessage);
       }

@@ -596,7 +596,7 @@ export function ArticleEditorPage({
           return;
         }
 
-        if (agent.state === "offline") {
+        if (agent.state === "paired_offline") {
           toast.info("FlowPost Agent не запущен. Мы попробуем открыть его автоматически.");
           toast.info(agentProtocolHint);
           const nextAgent = await openAgentAndWait({
@@ -648,7 +648,7 @@ export function ArticleEditorPage({
 
         toast.success(
           body.job
-            ? "Задача отправлена в FlowPost Agent."
+            ? "Публикация отправлена в FlowPost Agent. Браузер не будет показываться."
             : "Публикация запущена.",
         );
       } catch (error) {

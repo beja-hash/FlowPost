@@ -238,7 +238,7 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
       return agentState;
     }
 
-    showAgentSetup("offline");
+    showAgentSetup("paired_offline");
     const nextAgent = await openAgentAndWait({
       onStatus: (message) => toast.info(message),
     });
@@ -772,7 +772,7 @@ function AgentStatePanel({
     );
   }
 
-  if (state === "offline") {
+  if (state === "paired_offline") {
     return (
       <div className="border-border/70 bg-muted/20 rounded-xl border p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -805,12 +805,6 @@ function AgentStatePanel({
             href="/downloads"
           >
             Скачать Agent
-          </a>
-          <a
-            className="hover:bg-muted/75 inline-flex h-9 items-center justify-center rounded-xl px-3 text-[0.82rem] font-medium transition-colors"
-            href="/downloads"
-          >
-            Создать новый код подключения
           </a>
         </div>
         <p className="text-muted-foreground mt-3 text-xs">

@@ -56,23 +56,25 @@ async function writeSettings(next) {
 }
 
 function logLifecycle(action, extra = {}) {
-  console.log("[flowpost-agent:lifecycle]", {
+  const data = {
     action,
+    at: new Date().toISOString(),
     hasMainWindow: Boolean(mainWindow),
     mainWindowDestroyed: mainWindow?.isDestroyed?.() ?? null,
     webContentsDestroyed: mainWindow?.webContents?.isDestroyed?.() ?? null,
     ...extra,
-  });
+  };
+
+  console.log("[flowpost-agent:lifecycle]", data);
+  safeSend("agent:lifecycle", data);
 }
 
 function safeSend(channel, payload) {
   if (!mainWindow || mainWindow.isDestroyed()) {
-    logLifecycle("safe-send:skip-window-destroyed", { channel });
     return;
   }
 
   if (!mainWindow.webContents || mainWindow.webContents.isDestroyed()) {
-    logLifecycle("safe-send:skip-webcontents-destroyed", { channel });
     return;
   }
 
@@ -444,6 +446,17 @@ function setAutoLaunch(enabled) {
 }
 
 async function disconnectAgent() {
+  try {
+    await api("/api/agent/devices/revoke-current", {
+      method: "POST",
+      body: JSON.stringify({ reason: "user_disconnect" }),
+    });
+  } catch (error) {
+    logLifecycle("disconnect:revoke-failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
   await writeSettings({ agentToken: null, account: null });
   stopAgentLoops();
   updateTrayMenu();
@@ -645,8 +658,14 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on("before-quit", () => {
-  isQuitting = true;
+app.on("before-quit", (event) => {
+  if (!isQuitting) {
+    event.preventDefault();
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+    logLifecycle("quit-prevented-agent-hidden");
+    return;
+  }
+
   stopAgentLoops();
   void runner?.dispose?.();
 });
