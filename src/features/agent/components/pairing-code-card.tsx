@@ -5,6 +5,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { Button, buttonVariants } from "@/components/ui/button";
+import { agentProtocolHint } from "@/features/agent/client/agent-wake";
 
 type PairingCodeCardProps = {
   isAuthenticated: boolean;
@@ -105,6 +106,9 @@ export function PairingCodeCard({ isAuthenticated }: PairingCodeCardProps) {
       <p className="text-muted-foreground mt-4 text-base leading-7">
         После установки FlowPost Agent откройте приложение и вставьте этот код.
         Код одноразовый и действует 15 минут.
+      </p>
+      <p className="text-muted-foreground mt-3 text-sm leading-6">
+        {agentProtocolHint}
       </p>
 
       {isAuthenticated ? (

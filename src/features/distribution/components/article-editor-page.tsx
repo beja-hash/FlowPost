@@ -19,6 +19,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  agentProtocolHint,
+  fetchAgentState,
+  openAgentAndWait,
+} from "@/features/agent/client/agent-wake";
 import type { BrandOption } from "@/features/brands/types";
 import type {
   ArticleTone,
@@ -585,6 +590,27 @@ export function ArticleEditorPage({
 
     startTransition(async () => {
       try {
+        const agent = await fetchAgentState();
+        if (agent.state === "none") {
+          toast.info("Для публикации установите и подключите FlowPost Agent.");
+          return;
+        }
+
+        if (agent.state === "offline") {
+          toast.info("FlowPost Agent не запущен. Мы попробуем открыть его автоматически.");
+          toast.info(agentProtocolHint);
+          const nextAgent = await openAgentAndWait({
+            onStatus: (message) => toast.info(message),
+          });
+
+          if (nextAgent.state !== "active" && nextAgent.state !== "busy") {
+            toast.info(
+              "Не удалось открыть Agent автоматически. Установите приложение или откройте его вручную.",
+            );
+            return;
+          }
+        }
+
         const savedAsset = await saveArticle();
         const response = await fetch("/api/articles/publish", {
           method: "POST",

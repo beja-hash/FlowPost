@@ -224,12 +224,20 @@ export async function scheduleArticleForUser(
   return { articleId: article.id, publishAt: scheduledAt.toISOString() };
 }
 
-export async function publishArticleForUser(userId: string, articleId: string) {
+export async function publishArticleForUser(
+  userId: string,
+  articleId: string,
+  options: { allowOfflineQueue?: boolean } = {},
+) {
   logArticleStep("publish:desktop-agent-job:start", { userId, articleId });
   const { createPublishArticleJob } = await import(
     "@/features/agent/server/agent-service"
   );
-  return createPublishArticleJob({ userId, articleId });
+  return createPublishArticleJob({
+    userId,
+    articleId,
+    allowOfflineQueue: options.allowOfflineQueue,
+  });
 }
 
 async function markArticleFailed(articleId: string, errorMessage: string) {
@@ -279,7 +287,9 @@ export async function publishDueScheduledArticles() {
       continue;
     }
 
-    await publishArticleForUser(userId, publication.assetId).catch(
+    await publishArticleForUser(userId, publication.assetId, {
+      allowOfflineQueue: true,
+    }).catch(
       (error: unknown) => {
         logArticleError("scheduler:publish-failed", error, {
           articleId: publication.assetId,

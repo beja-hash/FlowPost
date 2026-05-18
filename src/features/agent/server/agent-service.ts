@@ -443,9 +443,11 @@ export async function createConnectPlatformJob({
 export async function createPublishArticleJob({
   userId,
   articleId,
+  allowOfflineQueue = false,
 }: {
   userId: string;
   articleId: string;
+  allowOfflineQueue?: boolean;
 }) {
   const article = await prisma.articleAsset.findFirst({
     where: {
@@ -519,7 +521,7 @@ export async function createPublishArticleJob({
       ? await getActiveAgentDevice(userId)
       : null;
 
-  if (!activeDevice) {
+  if (!activeDevice && !allowOfflineQueue) {
     console.log("[agent-service] publish-job:requires-agent", {
       userId,
       articleId,
@@ -539,7 +541,7 @@ export async function createPublishArticleJob({
     };
   }
 
-  if (agent.state === "busy") {
+  if (activeDevice && agent.state === "busy") {
     return {
       status: "busy" as const,
       message: "Agent уже выполняет задачу. Дождитесь завершения.",
@@ -576,7 +578,7 @@ export async function createPublishArticleJob({
       status: "busy" as const,
       message: "Публикация уже отправлена в Agent.",
       agentState: "busy" as const,
-      agentDevice: publicAgentDevice(activeDevice),
+      agentDevice: activeDevice ? publicAgentDevice(activeDevice) : null,
       job: publicAgentJob(existingJob),
     };
   }
@@ -605,7 +607,7 @@ export async function createPublishArticleJob({
     return tx.agentJob.create({
       data: {
         userId,
-        agentDeviceId: activeDevice.id,
+        agentDeviceId: activeDevice?.id,
         type: AgentJobType.PUBLISH_ARTICLE,
         platform: config.slug,
         payload: {
@@ -626,7 +628,7 @@ export async function createPublishArticleJob({
   console.log("[agent-service] publish-job:created", {
     userId,
     articleId,
-    agentDeviceId: activeDevice.id,
+    agentDeviceId: activeDevice?.id ?? null,
     jobId: job.id,
     type: job.type,
     platform: config.slug,
@@ -637,7 +639,7 @@ export async function createPublishArticleJob({
     message:
       "Задание публикации создано. FlowPost Agent откроет браузер на вашем компьютере.",
     agentState: agent.state,
-    agentDevice: publicAgentDevice(activeDevice),
+    agentDevice: activeDevice ? publicAgentDevice(activeDevice) : null,
     job: publicAgentJob(job),
   };
 }

@@ -375,6 +375,15 @@ function showMainWindow() {
   mainWindow.focus();
 }
 
+function ensureMainWindow({ show = false } = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow({ show });
+    return;
+  }
+
+  if (show) showMainWindow();
+}
+
 function createWindow({ show = true } = {}) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     if (show) showMainWindow();
@@ -474,23 +483,48 @@ function handleProtocolUrl(url) {
 
   const action = parsed.hostname || parsed.pathname.replace(/^\//, "");
   const code = parsed.searchParams.get("code");
+  const shouldShowWindow = action === "open" || action === "pair";
 
   if (action === "pair" && code) {
     pendingPairingCode = code;
   }
 
-  showMainWindow();
+  if (shouldShowWindow) {
+    showMainWindow();
+  } else {
+    ensureMainWindow({ show: false });
+    if (settings.agentToken) startPolling();
+  }
+
   sendState({
     status: "protocol_opened",
     protocolAction: action,
     pairingCode: pendingPairingCode,
     protocolPlatform: parsed.searchParams.get("platform"),
   });
+
+  return action;
 }
 
 function handleProtocolArgv(argv) {
   const protocolArg = argv.find((arg) => arg.startsWith("flowpost-agent://"));
-  if (protocolArg) handleProtocolUrl(protocolArg);
+  if (protocolArg) return handleProtocolUrl(protocolArg);
+  return null;
+}
+
+function shouldStartHidden(argv) {
+  if (argv.includes("--background") || argv.includes("--hidden")) return true;
+
+  const protocolArg = argv.find((arg) => arg.startsWith("flowpost-agent://"));
+  if (!protocolArg) return false;
+
+  try {
+    const parsed = new URL(protocolArg);
+    const action = parsed.hostname || parsed.pathname.replace(/^\//, "");
+    return action === "wake" || action === "open-background";
+  } catch {
+    return false;
+  }
 }
 
 ipcMain.handle("agent:get-state", async () => {
@@ -585,8 +619,8 @@ ipcMain.handle("agent:open-profiles", async () => {
 
 app.on("second-instance", (_event, argv) => {
   logLifecycle("single-instance:second-instance", { argv });
-  handleProtocolArgv(argv);
-  showMainWindow();
+  const action = handleProtocolArgv(argv);
+  if (!action) showMainWindow();
 });
 
 app.on("open-url", (event, url) => {
@@ -600,14 +634,14 @@ app.whenReady().then(async () => {
   await readSettings();
   setAutoLaunch(settings.autoLaunch === true);
   createTray();
-  createWindow({ show: !process.argv.includes("--background") });
+  createWindow({ show: !shouldStartHidden(process.argv) });
   handleProtocolArgv(process.argv);
   mainWindow.webContents.once("did-finish-load", () => {
     sendState();
     if (settings.agentToken) startPolling();
   });
   logLifecycle("app:started", {
-    background: process.argv.includes("--background"),
+    background: shouldStartHidden(process.argv),
   });
 });
 

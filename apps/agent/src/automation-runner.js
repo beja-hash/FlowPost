@@ -27,6 +27,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
   let activeContext = null;
   let activePage = null;
   let activePlatform = null;
+  let activeHeadless = null;
   let activeContextClosed = true;
   let isLaunching = false;
   let launchPromise = null;
@@ -39,6 +40,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
     console.log("[flowpost-agent:runner]", {
       action,
       activePlatform,
+      activeHeadless,
       activeContext: Boolean(activeContext),
       activePage: Boolean(activePage),
       activeContextClosed,
@@ -166,6 +168,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
     activeContext = null;
     activePage = null;
     activePlatform = null;
+    activeHeadless = null;
     activeContextClosed = true;
     setBrowserState("closed");
   }
@@ -183,11 +186,12 @@ function createAutomationRunner({ app, sendState, logJob }) {
     }
   }
 
-  function contextLooksUsable(platform) {
+  function contextLooksUsable(platform, headless) {
     return (
       activeContext &&
       !activeContextClosed &&
-      activePlatform === platform
+      activePlatform === platform &&
+      activeHeadless === headless
     );
   }
 
@@ -208,10 +212,11 @@ function createAutomationRunner({ app, sendState, logJob }) {
     return activePage;
   }
 
-  async function getOrLaunchContext(platform) {
+  async function getOrLaunchContext(platform, options = {}) {
     const normalizedPlatform = normalizePlatform(platform);
+    const headless = Boolean(options.headless);
 
-    if (contextLooksUsable(normalizedPlatform)) {
+    if (contextLooksUsable(normalizedPlatform, headless)) {
       logRunner("context:reuse", { platform: normalizedPlatform });
       setBrowserState("opened", { status: "browser_already_opened" });
       return activeContext;
@@ -229,6 +234,15 @@ function createAutomationRunner({ app, sendState, logJob }) {
       return launchPromise;
     }
 
+    if (
+      activeContext &&
+      activePlatform === normalizedPlatform &&
+      activeHeadless === headless
+    ) {
+      logRunner("context:reuse-visible", { platform: normalizedPlatform });
+      return activeContext;
+    }
+
     await closeActiveContext();
     await ensureChromium();
     const chromium = await getChromium();
@@ -238,6 +252,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
 
     isLaunching = true;
     activePlatform = normalizedPlatform;
+    activeHeadless = headless;
     activeContextClosed = true;
     setBrowserState("launching", { status: "launching_browser" });
     logRunner("context:launch:start", {
@@ -247,9 +262,9 @@ function createAutomationRunner({ app, sendState, logJob }) {
 
     launchPromise = chromium
       .launchPersistentContext(userDataDir, {
-        headless: false,
-        args: ["--start-maximized"],
-        viewport: null,
+        headless,
+        args: headless ? [] : ["--start-maximized"],
+        viewport: headless ? { width: 1440, height: 1000 } : null,
       })
       .then((context) => {
         activeContext = context;
@@ -271,14 +286,14 @@ function createAutomationRunner({ app, sendState, logJob }) {
     return launchPromise;
   }
 
-  async function launchContext(platform) {
-    const context = await getOrLaunchContext(platform);
+  async function launchContext(platform, options = {}) {
+    const context = await getOrLaunchContext(platform, options);
     await getOrCreatePage(context);
     return context;
   }
 
-  async function openPage(platform, url) {
-    const context = await getOrLaunchContext(platform);
+  async function openPage(platform, url, options = {}) {
+    const context = await getOrLaunchContext(platform, options);
     const page = await getOrCreatePage(context);
 
     if (page.isClosed()) {
@@ -291,7 +306,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
   }
 
   async function launchDetachedBrowser(platform, url) {
-    const { context, page } = await openPage(platform, url);
+    const { context, page } = await openPage(platform, url, { headless: false });
     sendState({ status: "browser_opened" });
     return { context, page };
   }
@@ -307,7 +322,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
     await updateJobStatus(job.id, "running");
     setBrowserState("running_job", { status: "browser_opening" });
 
-    const context = await launchContext(platform);
+    const context = await launchContext(platform, { headless: false });
     let finishedLogin;
     let browserClosed = false;
     const loginFinished = new Promise((resolve) => {
@@ -417,7 +432,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
     await updateJobStatus(job.id, "running");
     setBrowserState("running_job", { status: "publishing" });
 
-    const { page } = await openPage(platform, editorUrl);
+    const { page } = await openPage(platform, editorUrl, { headless: true });
 
     try {
       await fillArticle(page, platform, title, body);

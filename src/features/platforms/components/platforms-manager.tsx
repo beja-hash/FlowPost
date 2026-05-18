@@ -6,6 +6,12 @@ import { toast } from "sonner";
 import { StatusBadge } from "@/components/saas/status-badge";
 import { Button } from "@/components/ui/button";
 import {
+  agentProtocolHint,
+  openAgentAndWait,
+  type AgentConnectionState,
+  type AgentStateName,
+} from "@/features/agent/client/agent-wake";
+import {
   Card,
   CardAction,
   CardContent,
@@ -68,15 +74,6 @@ type AgentDevice = {
 
 type AgentConnectState = {
   job: AgentJob;
-};
-
-type AgentStateName = "none" | "offline" | "active" | "busy";
-
-type AgentConnectionState = {
-  state: AgentStateName;
-  device: AgentDevice | null;
-  busyJob: AgentJob | null;
-  lastSeenAt: string | null;
 };
 
 const agentStatusLabels: Record<AgentJobStatus, string> = {
@@ -222,17 +219,47 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
   }, [selectedPlatform]);
 
   function openAgent() {
-    window.location.href = "flowpost-agent://open";
-    toast.info("Пробуем открыть FlowPost Agent. Если приложение не открылось, скачайте и установите Agent заново.");
+    window.location.href = "flowpost-agent://wake";
+    toast.info("Запускаем FlowPost Agent...");
   }
 
   function showAgentSetup(nextState: AgentStateName = agentState.state) {
     setAgentNotice(nextState);
   }
 
+  async function ensureAgentReady() {
+    if (agentState.state === "active" || agentState.state === "busy") {
+      return agentState;
+    }
+
+    if (agentState.state === "none") {
+      showAgentSetup("none");
+      toast.info("Для запуска браузера установите и подключите FlowPost Agent.");
+      return agentState;
+    }
+
+    showAgentSetup("offline");
+    const nextAgent = await openAgentAndWait({
+      onStatus: (message) => toast.info(message),
+    });
+    setAgentState(nextAgent);
+
+    if (nextAgent.state !== "active" && nextAgent.state !== "busy") {
+      showAgentSetup(nextAgent.state);
+    }
+
+    return nextAgent;
+  }
+
   async function handleConnect(platform: PlatformConnection) {
-    if (agentState.state !== "active") {
-      showAgentSetup(agentState.state);
+    const readyAgent = await ensureAgentReady();
+
+    if (readyAgent.state === "busy") {
+      toast.info("Agent уже выполняет задачу. Дождитесь завершения.");
+      return;
+    }
+
+    if (readyAgent.state !== "active") {
       return;
     }
 
@@ -298,13 +325,14 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
   }
 
   async function handleLaunch(platform: PlatformConnection) {
-    if (agentState.state !== "active") {
-      showAgentSetup(agentState.state);
-      if (agentState.state === "offline") {
-        toast.info("FlowPost Agent не запущен. Откройте Agent и повторите действие.");
-      } else {
-        toast.info("Для запуска браузера установите и подключите FlowPost Agent.");
-      }
+    const readyAgent = await ensureAgentReady();
+
+    if (readyAgent.state === "busy") {
+      toast.info("Agent уже выполняет задачу. Дождитесь завершения.");
+      return;
+    }
+
+    if (readyAgent.state !== "active") {
       return;
     }
 
@@ -751,11 +779,10 @@ function AgentStatePanel({
           <div>
             <StatusBadge tone="warning">FlowPost Agent не запущен</StatusBadge>
             <h2 className="mt-3 text-base font-semibold">
-              Откройте приложение FlowPost Agent
+              FlowPost Agent не запущен
             </h2>
             <p className="text-muted-foreground mt-2 text-sm leading-6">
-              Откройте приложение FlowPost Agent или включите автозапуск, чтобы
-              запускать браузер из FlowPost.
+              Мы попробуем открыть его автоматически.
             </p>
             {lastSeenAt ? (
               <p className="text-muted-foreground mt-2 text-xs">
@@ -787,7 +814,7 @@ function AgentStatePanel({
           </a>
         </div>
         <p className="text-muted-foreground mt-3 text-xs">
-          Если Agent не открылся, скачайте и установите его заново.
+          {agentProtocolHint}
         </p>
       </div>
     );

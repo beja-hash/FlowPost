@@ -17,6 +17,11 @@ import { toast } from "sonner";
 import { StatusBadge } from "@/components/saas/status-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  agentProtocolHint,
+  fetchAgentState,
+  openAgentAndWait,
+} from "@/features/agent/client/agent-wake";
 import type { BrandOption } from "@/features/brands/types";
 import type {
   DistributionAssetListItem,
@@ -125,6 +130,29 @@ export function DistributionManager({
     let generationTimer: number | null = null;
 
     try {
+      if (endpoint === "/api/articles/publish") {
+        const agent = await fetchAgentState();
+        if (agent.state === "none") {
+          toast.info("Для публикации установите и подключите FlowPost Agent.");
+          return;
+        }
+
+        if (agent.state === "offline") {
+          toast.info("FlowPost Agent не запущен. Мы попробуем открыть его автоматически.");
+          toast.info(agentProtocolHint);
+          const nextAgent = await openAgentAndWait({
+            onStatus: (message) => toast.info(message),
+          });
+
+          if (nextAgent.state !== "active" && nextAgent.state !== "busy") {
+            toast.info(
+              "Не удалось открыть Agent автоматически. Установите приложение или откройте его вручную.",
+            );
+            return;
+          }
+        }
+      }
+
       if (endpoint === "/api/articles/generate") {
         let messageIndex = 0;
         setGenerationStatus(generationMessages[messageIndex]);
