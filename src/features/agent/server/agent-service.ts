@@ -112,6 +112,36 @@ function jobErrorCode(job: Pick<AgentJob, "result" | "error">) {
   return explicitCode;
 }
 
+function friendlyPublishError(job: Pick<AgentJob, "result" | "error">) {
+  const code = jobErrorCode(job);
+
+  if (code === "SESSION_EXPIRED") {
+    return "Сессия площадки истекла. Нажмите «Переподключить», чтобы войти заново.";
+  }
+
+  if (code === "PAYLOAD_INCOMPLETE") {
+    return "Недостаточно данных для публикации. Сохраните статью и попробуйте снова.";
+  }
+
+  if (
+    code === "EDITOR_FIELDS_NOT_FOUND" ||
+    code === "DZEN_EDITOR_NOT_FOUND" ||
+    code === "VC_EDITOR_NOT_FOUND"
+  ) {
+    return "Не удалось найти редактор площадки. Откройте площадку через «Переподключить» и проверьте вход.";
+  }
+
+  if (
+    code === "PUBLISH_BUTTON_NOT_FOUND" ||
+    code === "DZEN_PUBLISH_BUTTON_NOT_FOUND" ||
+    code === "VC_PUBLISH_BUTTON_NOT_FOUND"
+  ) {
+    return "Не удалось найти кнопку публикации. Возможно, интерфейс площадки изменился.";
+  }
+
+  return job.error ?? "Ошибка автоматизации публикации.";
+}
+
 export function publicAgentDevice(device: AgentDevice) {
   return {
     id: device.id,
@@ -1182,10 +1212,7 @@ export async function updateAgentJobStatus({
       platform?: string;
     };
     const code = jobErrorCode(updatedJob);
-    const friendlyError =
-      code === "SESSION_EXPIRED"
-        ? "Сессия площадки истекла. Нажмите «Переподключить», чтобы войти заново."
-        : updatedJob.error ?? "Publish failed in Agent.";
+    const friendlyError = friendlyPublishError(updatedJob);
 
     if (payload.articleId) {
       await prisma.articleAsset.update({

@@ -29,6 +29,8 @@ let isQuitting = false;
 let pendingPairingCode = null;
 let lastHeartbeatAt = null;
 let hiddenToTrayNoticeShown = false;
+let wakeOnDemandMode = false;
+let quitAfterWakeTimer = null;
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -247,6 +249,35 @@ function startHeartbeat() {
 function stopAgentLoops() {
   clearInterval(pollingTimer);
   clearInterval(heartbeatTimer);
+  clearTimeout(quitAfterWakeTimer);
+}
+
+function shouldQuitAfterWakeJob() {
+  return String(process.env.AGENT_QUIT_AFTER_WAKE_JOB || "").toLowerCase() === "true";
+}
+
+function scheduleQuitAfterWakeJob() {
+  clearTimeout(quitAfterWakeTimer);
+
+  if (!wakeOnDemandMode || !shouldQuitAfterWakeJob()) {
+    return;
+  }
+
+  if (activeJobId || runner?.hasVisibleBrowser?.()) {
+    return;
+  }
+
+  quitAfterWakeTimer = setTimeout(() => {
+    if (activeJobId || runner?.hasVisibleBrowser?.()) {
+      return;
+    }
+
+    logLifecycle("app:quit-after-wake-job");
+    isQuitting = true;
+    stopAgentLoops();
+    void runner?.dispose?.();
+    app.quit();
+  }, 15_000);
 }
 
 function prewarmBrowser() {
@@ -320,11 +351,14 @@ async function pollJobs() {
     return;
   }
 
+  let handledJob = false;
+
   try {
     isPolling = true;
     sendState({ status: "waiting_job" });
     const { job } = await api("/api/agent/jobs/next");
     if (!job) return;
+    handledJob = true;
     activeJobId = job.id;
     console.log("[agent] job received", {
       id: job.id,
@@ -375,6 +409,10 @@ async function pollJobs() {
   } finally {
     isPolling = false;
     activeJobId = null;
+    if (handledJob) {
+      sendState({ status: "idle", activeJobId: null });
+      scheduleQuitAfterWakeJob();
+    }
   }
 }
 
@@ -602,6 +640,10 @@ function handleProtocolUrl(url) {
   const action = parsed.hostname || parsed.pathname.replace(/^\//, "");
   const code = parsed.searchParams.get("code");
   const shouldShowWindow = action === "open" || action === "pair";
+
+  if (action === "wake" || action === "open-background") {
+    wakeOnDemandMode = true;
+  }
 
   if (action === "pair" && code) {
     pendingPairingCode = code;
