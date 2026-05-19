@@ -32,6 +32,15 @@ let hiddenToTrayNoticeShown = false;
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
+class FlowPostApiError extends Error {
+  constructor(message, { status, code } = {}) {
+    super(message);
+    this.name = "FlowPostApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
 if (!gotSingleInstanceLock) {
   app.quit();
 }
@@ -138,12 +147,51 @@ async function api(pathname, options = {}) {
   const body = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(
+    throw new FlowPostApiError(
       body?.error?.message || `FlowPost API error ${response.status}`,
+      {
+        status: response.status,
+        code: body?.error?.code,
+      },
     );
   }
 
   return body;
+}
+
+function isRevokedTokenError(error) {
+  const code = error?.code ? String(error.code).toUpperCase() : "";
+
+  return (
+    error?.status === 401 ||
+    error?.status === 403 ||
+    code === "DEVICE_REVOKED" ||
+    code === "AGENT_REVOKED" ||
+    code === "INVALID_TOKEN" ||
+    code === "INVALID_AGENT_TOKEN"
+  );
+}
+
+async function clearLocalAgentToken(reason = "Agent отключен от аккаунта. Создайте новый код подключения в FlowPost.") {
+  if (!settings.agentToken) {
+    sendState({ status: "agent_revoked", error: reason });
+    return;
+  }
+
+  console.log("[agent] token revoked");
+  clearInterval(pollingTimer);
+  console.log("[agent] polling stopped");
+  clearInterval(heartbeatTimer);
+  console.log("[agent] heartbeat stopped");
+  await writeSettings({ agentToken: null, account: null });
+  console.log("[agent] local token cleared");
+  activeJobId = null;
+  isPolling = false;
+  sendState({
+    status: "agent_revoked",
+    error: reason,
+    activeJobId: null,
+  });
 }
 
 async function updateJobStatus(jobId, status, extra = {}) {
@@ -177,6 +225,13 @@ async function sendHeartbeat() {
     logLifecycle("heartbeat:sent");
     sendState({ status: "heartbeat_active" });
   } catch (error) {
+    if (isRevokedTokenError(error)) {
+      await clearLocalAgentToken(
+        "Agent отключен от аккаунта. Создайте новый код подключения в FlowPost.",
+      );
+      return;
+    }
+
     logLifecycle("heartbeat:failed", {
       error: error instanceof Error ? error.message : String(error),
     });
@@ -306,6 +361,13 @@ async function pollJobs() {
       throw error;
     }
   } catch (error) {
+    if (isRevokedTokenError(error)) {
+      await clearLocalAgentToken(
+        "Agent отключен от аккаунта. Создайте новый код подключения в FlowPost.",
+      );
+      return;
+    }
+
     sendState({
       status: "error",
       error: userSafeErrorMessage(error, "Неизвестная ошибка Agent."),
@@ -491,6 +553,13 @@ async function disconnectAgent() {
     logLifecycle("disconnect:revoke-failed", {
       error: error instanceof Error ? error.message : String(error),
     });
+
+    if (isRevokedTokenError(error)) {
+      await clearLocalAgentToken(
+        "Agent отключен от аккаунта. Создайте новый код подключения в FlowPost.",
+      );
+      return;
+    }
   }
 
   await writeSettings({ agentToken: null, account: null });

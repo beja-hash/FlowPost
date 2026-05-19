@@ -84,6 +84,9 @@ function applyState(state) {
   if (state.status === "connected" || state.connected) {
     setOperation("connected");
   }
+  if (state.status === "agent_revoked" || state.status === "disconnected") {
+    setOperation("idle");
+  }
   if (state.status === "error") {
     setOperation("error");
   }

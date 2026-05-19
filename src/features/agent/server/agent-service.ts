@@ -335,7 +335,23 @@ export async function authenticateAgent(authorization: string | null) {
     },
   });
 
-  if (!device || device.status !== AgentDeviceStatus.ACTIVE) {
+  if (!device) {
+    throw new AgentServiceError(
+      401,
+      "INVALID_AGENT_TOKEN",
+      "Agent token недействителен или отозван.",
+    );
+  }
+
+  if (device.status === AgentDeviceStatus.REVOKED) {
+    throw new AgentServiceError(
+      401,
+      "DEVICE_REVOKED",
+      "Agent отключен от аккаунта.",
+    );
+  }
+
+  if (device.status !== AgentDeviceStatus.ACTIVE) {
     throw new AgentServiceError(
       401,
       "INVALID_AGENT_TOKEN",
@@ -424,6 +440,90 @@ export async function revokeAgentDevice(userId: string, deviceId: string) {
   });
 
   return publicAgentDevice(revoked);
+}
+
+export async function disconnectAgentDevicesForUser(userId: string) {
+  const devices = await prisma.agentDevice.findMany({
+    where: {
+      userId,
+      status: AgentDeviceStatus.ACTIVE,
+    },
+    select: {
+      id: true,
+    },
+  });
+  const deviceIds = devices.map((device) => device.id);
+
+  console.log("[agent-service] disconnect:requested", {
+    userId,
+    deviceIds,
+  });
+
+  if (deviceIds.length === 0) {
+    console.log("[agent-service] disconnect:revoked", {
+      userId,
+      count: 0,
+    });
+    console.log("[agent-service] disconnect:jobs-cancelled", {
+      userId,
+      count: 0,
+    });
+
+    return {
+      ok: true,
+      revokedCount: 0,
+      cancelledJobsCount: 0,
+    };
+  }
+
+  const now = new Date();
+  const [revoked, cancelledJobs] = await prisma.$transaction([
+    prisma.agentDevice.updateMany({
+      where: {
+        userId,
+        id: { in: deviceIds },
+        status: AgentDeviceStatus.ACTIVE,
+      },
+      data: {
+        status: AgentDeviceStatus.REVOKED,
+        revokedAt: now,
+      },
+    }),
+    prisma.agentJob.updateMany({
+      where: {
+        userId,
+        agentDeviceId: { in: deviceIds },
+        status: {
+          in: [
+            AgentJobStatus.QUEUED,
+            AgentJobStatus.PICKED_UP,
+            AgentJobStatus.RUNNING,
+            AgentJobStatus.WAITING_USER_LOGIN,
+          ],
+        },
+      },
+      data: {
+        status: AgentJobStatus.CANCELLED,
+        completedAt: now,
+        error: "Agent disconnected",
+      },
+    }),
+  ]);
+
+  console.log("[agent-service] disconnect:revoked", {
+    userId,
+    count: revoked.count,
+  });
+  console.log("[agent-service] disconnect:jobs-cancelled", {
+    userId,
+    count: cancelledJobs.count,
+  });
+
+  return {
+    ok: true,
+    revokedCount: revoked.count,
+    cancelledJobsCount: cancelledJobs.count,
+  };
 }
 
 export async function revokeAuthenticatedAgent(authorization: string | null) {

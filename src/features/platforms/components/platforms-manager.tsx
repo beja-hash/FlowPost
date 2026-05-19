@@ -113,6 +113,8 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
   const [agentState, setAgentState] =
     useState<AgentConnectionState>(defaultAgentState);
   const [agentNotice, setAgentNotice] = useState<AgentStateName | null>(null);
+  const [agentDisconnectOpen, setAgentDisconnectOpen] = useState(false);
+  const [disconnectingAgent, setDisconnectingAgent] = useState(false);
 
   async function refreshAgentDevices() {
     try {
@@ -451,6 +453,38 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
     }
   }
 
+  async function handleDisconnectAgent() {
+    setDisconnectingAgent(true);
+
+    try {
+      const response = await fetch("/api/agent/devices/disconnect", {
+        method: "POST",
+      });
+      const body = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: { message?: string };
+      };
+
+      if (!response.ok || body.ok !== true) {
+        throw new Error(body.error?.message ?? "Не удалось отключить Agent.");
+      }
+
+      setAgentDisconnectOpen(false);
+      setAgentNotice(null);
+      setAgentConnect(null);
+      setAgentDevices([]);
+      setAgentState(defaultAgentState);
+      await refreshAgentDevices();
+      toast.success("FlowPost Agent отключен от аккаунта.");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Не удалось отключить Agent.",
+      );
+    } finally {
+      setDisconnectingAgent(false);
+    }
+  }
+
   const activeAgent =
     agentState.state === "active" || agentState.state === "busy"
       ? agentState.device
@@ -470,6 +504,7 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
         notice={agentNotice}
         onOpenAgent={openAgent}
         onDismissNotice={() => setAgentNotice(null)}
+        onDisconnectAgent={() => setAgentDisconnectOpen(true)}
       />
 
       {agentConnect ? (
@@ -677,6 +712,39 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={agentDisconnectOpen} onOpenChange={setAgentDisconnectOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Отключить FlowPost Agent?</DialogTitle>
+            <DialogDescription>
+              Agent будет отвязан от этого аккаунта. Чтобы снова использовать
+              публикации через браузер, нужно будет создать новый код
+              подключения и подключить Agent заново.
+            </DialogDescription>
+          </DialogHeader>
+          <p className="text-muted-foreground text-sm leading-6">
+            Подключенные площадки и локальные профили браузера не удаляются
+            автоматически.
+          </p>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setAgentDisconnectOpen(false)}
+              disabled={disconnectingAgent}
+            >
+              Отмена
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => void handleDisconnectAgent()}
+              disabled={disconnectingAgent}
+            >
+              {disconnectingAgent ? "Отключаем..." : "Отключить Agent"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -734,17 +802,22 @@ function AgentStatePanel({
   notice,
   onOpenAgent,
   onDismissNotice,
+  onDisconnectAgent,
 }: {
   agent: AgentConnectionState;
   notice: AgentStateName | null;
   onOpenAgent: () => void;
   onDismissNotice: () => void;
+  onDisconnectAgent: () => void;
 }) {
   const state = notice ?? agent.state;
   const lastSeenAt = agent.device?.lastSeenAt
     ? new Date(agent.device.lastSeenAt).toLocaleString()
     : null;
   const isNotice = notice !== null;
+  const canDisconnectAgent = Boolean(
+    agent.device && (agent.state === "active" || agent.state === "paired_offline"),
+  );
 
   if (state === "active") {
     return (
@@ -761,6 +834,16 @@ function AgentStatePanel({
               Браузер будет открыт на вашем компьютере.
             </p>
           </div>
+          {canDisconnectAgent ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-destructive/40 text-destructive hover:border-destructive/60 hover:bg-destructive/10 hover:text-destructive"
+              onClick={onDisconnectAgent}
+            >
+              Отключить Agent
+            </Button>
+          ) : null}
         </div>
       </div>
     );
@@ -803,6 +886,15 @@ function AgentStatePanel({
           {isNotice ? (
             <Button variant="ghost" size="sm" onClick={onDismissNotice}>
               Скрыть
+            </Button>
+          ) : canDisconnectAgent ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-destructive/40 text-destructive hover:border-destructive/60 hover:bg-destructive/10 hover:text-destructive"
+              onClick={onDisconnectAgent}
+            >
+              Отключить Agent
             </Button>
           ) : null}
         </div>
