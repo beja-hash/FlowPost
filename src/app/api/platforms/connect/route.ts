@@ -125,6 +125,7 @@ export async function POST(request: NextRequest) {
       mode: "desktop_agent",
       status: result.status,
       message: result.message,
+      agentState: result.agentState,
       platform: platformConfig
         ? {
             id: platformConfig.slug,

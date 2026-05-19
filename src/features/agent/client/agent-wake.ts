@@ -77,7 +77,7 @@ export async function openAgentAndWait({
   }
 
   onStatus?.(
-    "Не удалось открыть Agent автоматически. Установите приложение или откройте его вручную.",
+    "Не удалось открыть FlowPost Agent. Откройте приложение вручную или установите его заново.",
   );
   return fetchAgentState();
 }

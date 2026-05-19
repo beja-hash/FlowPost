@@ -69,13 +69,45 @@ async function writeSettings(next) {
   sendState();
 }
 
+function getWindowLifecycleState() {
+  try {
+    if (!mainWindow) {
+      return {
+        hasMainWindow: false,
+        mainWindowDestroyed: null,
+        webContentsDestroyed: null,
+      };
+    }
+
+    if (mainWindow.isDestroyed()) {
+      return {
+        hasMainWindow: true,
+        mainWindowDestroyed: true,
+        webContentsDestroyed: null,
+      };
+    }
+
+    const webContents = mainWindow.webContents;
+    return {
+      hasMainWindow: true,
+      mainWindowDestroyed: false,
+      webContentsDestroyed: webContents?.isDestroyed?.() ?? null,
+    };
+  } catch (error) {
+    return {
+      hasMainWindow: Boolean(mainWindow),
+      mainWindowDestroyed: null,
+      webContentsDestroyed: null,
+      lifecycleStateError: error?.message || String(error),
+    };
+  }
+}
+
 function logLifecycle(action, extra = {}) {
   const data = {
     action,
     at: new Date().toISOString(),
-    hasMainWindow: Boolean(mainWindow),
-    mainWindowDestroyed: mainWindow?.isDestroyed?.() ?? null,
-    webContentsDestroyed: mainWindow?.webContents?.isDestroyed?.() ?? null,
+    ...getWindowLifecycleState(),
     ...extra,
   };
 
@@ -85,15 +117,18 @@ function logLifecycle(action, extra = {}) {
 }
 
 function safeSend(channel, payload) {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return;
-  }
+  try {
+    if (!mainWindow) return;
+    if (mainWindow.isDestroyed()) return;
 
-  if (!mainWindow.webContents || mainWindow.webContents.isDestroyed()) {
-    return;
-  }
+    const webContents = mainWindow.webContents;
+    if (!webContents) return;
+    if (webContents.isDestroyed()) return;
 
-  mainWindow.webContents.send(channel, payload);
+    webContents.send(channel, payload);
+  } catch (error) {
+    console.warn("[agent:safeSend] skipped", error?.message || error);
+  }
 }
 
 function userSafeErrorMessage(error, fallback) {
@@ -373,12 +408,16 @@ async function runPublishArticleJob(job) {
 }
 
 async function handleJob(job) {
-  if (job.type === "connect_platform") {
+  if (
+    job.type === "connect_platform" ||
+    job.type === "open_platform" ||
+    job.type === "reconnect_platform"
+  ) {
     await runConnectPlatformJob(job);
     return;
   }
 
-  if (job.type === "publish_article") {
+  if (job.type === "publish_article" || job.type === "scheduled_publish") {
     await runPublishArticleJob(job);
     return;
   }

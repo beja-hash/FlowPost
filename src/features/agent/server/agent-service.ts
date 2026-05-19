@@ -24,6 +24,7 @@ const TOKEN_PREFIX = "fp_agent_";
 const PAIRING_TTL_MINUTES = 15;
 const ACTIVE_AGENT_WINDOW_MS = 60 * 1000;
 const STALE_RUNNING_JOB_MS = 10 * 60 * 1000;
+const STALE_INTERACTIVE_JOB_MS = 2 * 60 * 1000;
 
 export class AgentServiceError extends Error {
   constructor(
@@ -83,6 +84,25 @@ function payloadKeys(payload: unknown) {
   }
 
   return Object.keys(payload);
+}
+
+function availableAgentJobTypes(types: string[]) {
+  const knownTypes = new Set(Object.values(AgentJobType));
+  return types.filter((type): type is AgentJobType =>
+    knownTypes.has(type as AgentJobType),
+  );
+}
+
+function interactivePlatformJobTypes() {
+  return availableAgentJobTypes([
+    "CONNECT_PLATFORM",
+    "OPEN_PLATFORM",
+    "RECONNECT_PLATFORM",
+  ]);
+}
+
+function publishAgentJobTypes() {
+  return availableAgentJobTypes(["PUBLISH_ARTICLE", "SCHEDULED_PUBLISH"]);
 }
 
 function jobErrorCode(job: Pick<AgentJob, "result" | "error">) {
@@ -260,6 +280,11 @@ export async function createPairingCodeForUser(userId: string) {
 }
 
 export async function cleanupStaleAgentJobs(userId?: string) {
+  await cleanupStaleInteractivePlatformJobs({
+    userId,
+    reason: "Cancelled stale interactive platform launch before agent poll",
+  });
+
   const cutoff = new Date(Date.now() - STALE_RUNNING_JOB_MS);
   const runningResult = await prisma.agentJob.updateMany({
     where: {
@@ -311,6 +336,72 @@ export async function cleanupStaleAgentJobs(userId?: string) {
       cutoff,
     });
   }
+}
+
+async function cleanupStaleInteractivePlatformJobs({
+  userId,
+  platform,
+  agentDeviceId,
+  reason,
+}: {
+  userId?: string;
+  platform?: string;
+  agentDeviceId?: string | null;
+  reason: string;
+}) {
+  const types = interactivePlatformJobTypes();
+
+  if (types.length === 0) {
+    return 0;
+  }
+
+  const cutoff = new Date(Date.now() - STALE_INTERACTIVE_JOB_MS);
+  const result = await prisma.agentJob.updateMany({
+    where: {
+      ...(userId ? { userId } : {}),
+      ...(platform ? { platform } : {}),
+      ...(agentDeviceId !== undefined ? { agentDeviceId } : {}),
+      type: { in: types },
+      OR: [
+        {
+          status: AgentJobStatus.QUEUED,
+          agentDeviceId: null,
+        },
+        {
+          status: AgentJobStatus.QUEUED,
+          createdAt: { lt: cutoff },
+        },
+        {
+          status: {
+            in: [
+              AgentJobStatus.PICKED_UP,
+              AgentJobStatus.RUNNING,
+              AgentJobStatus.WAITING_USER_LOGIN,
+            ],
+          },
+          updatedAt: { lt: cutoff },
+        },
+      ],
+    },
+    data: {
+      status: AgentJobStatus.CANCELLED,
+      completedAt: new Date(),
+      error: reason,
+    },
+  });
+
+  if (result.count > 0) {
+    console.log("[agent-service] cleanup:interactive-jobs-cancelled", {
+      userId: userId ?? null,
+      platform: platform ?? null,
+      agentDeviceId: agentDeviceId ?? null,
+      count: result.count,
+      cutoff,
+      reason,
+    });
+  }
+
+  return result.count;
 }
 
 export async function confirmPairingCode({
@@ -603,6 +694,12 @@ export async function createConnectPlatformJob({
     );
   }
 
+  await cleanupStaleInteractivePlatformJobs({
+    userId,
+    platform: config.slug,
+    reason: "Cancelled stale interactive platform launch before new request",
+  });
+
   const agent = await getAgentConnectionState(userId);
   const activeDevice =
     agent.state === "active" || agent.state === "busy"
@@ -641,7 +738,7 @@ export async function createConnectPlatformJob({
   const existingJob = await prisma.agentJob.findFirst({
     where: {
       userId,
-      type: AgentJobType.CONNECT_PLATFORM,
+      type: { in: interactivePlatformJobTypes() },
       platform: config.slug,
       status: {
         in: [
@@ -812,6 +909,12 @@ export async function createPublishArticleJob({
     busyJobId: agent.busyJob?.id ?? null,
   });
 
+  await cleanupStaleInteractivePlatformJobs({
+    userId,
+    platform: config.slug,
+    reason: "Cancelled stale interactive platform launch before publish",
+  });
+
   if (!activeDevice && (agent.state === "none" || !allowOfflineQueue)) {
     console.log("[agent-service] publish-job:requires-agent", {
       userId,
@@ -967,16 +1070,33 @@ export async function getNextAgentJob(authorization: string | null) {
     deviceId: device.id,
   });
 
-  const job = await prisma.agentJob.findFirst({
-    where: {
-      userId: device.userId,
-      status: AgentJobStatus.QUEUED,
-      OR: [{ agentDeviceId: device.id }, { agentDeviceId: null }],
-    },
-    orderBy: {
-      createdAt: "asc",
-    },
-  });
+  const baseWhere = {
+    userId: device.userId,
+    status: AgentJobStatus.QUEUED,
+    OR: [{ agentDeviceId: device.id }, { agentDeviceId: null }],
+  };
+  const publishTypes = publishAgentJobTypes();
+  const priorityJob =
+    publishTypes.length > 0
+      ? await prisma.agentJob.findFirst({
+          where: {
+            ...baseWhere,
+            type: { in: publishTypes },
+          },
+          orderBy: {
+            createdAt: "asc",
+          },
+        })
+      : null;
+
+  const job =
+    priorityJob ??
+    (await prisma.agentJob.findFirst({
+      where: baseWhere,
+      orderBy: {
+        createdAt: "asc",
+      },
+    }));
 
   if (!job) {
     console.log("[agent-service] jobs-next:request", {

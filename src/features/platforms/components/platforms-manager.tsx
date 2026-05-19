@@ -260,20 +260,22 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
   }
 
   async function handleConnect(platform: PlatformConnection) {
+    setConnectingPlatform(platform.platform);
     const readyAgent = await ensureAgentReady();
 
     if (readyAgent.state === "busy") {
       toast.info(
         "FlowPost Agent занят. Agent уже выполняет задачу. Дождитесь завершения или обновите статус.",
       );
+      setConnectingPlatform(null);
       return;
     }
 
     if (readyAgent.state !== "active") {
+      setConnectingPlatform(null);
       return;
     }
 
-    setConnectingPlatform(platform.platform);
     setAgentConnect(null);
     setAgentNotice(null);
 
@@ -338,20 +340,22 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
   }
 
   async function handleLaunch(platform: PlatformConnection) {
+    setLaunchingPlatform(platform.platform);
     const readyAgent = await ensureAgentReady();
 
     if (readyAgent.state === "busy") {
       toast.info(
         "FlowPost Agent занят. Agent уже выполняет задачу. Дождитесь завершения или обновите статус.",
       );
+      setLaunchingPlatform(null);
       return;
     }
 
     if (readyAgent.state !== "active") {
+      setLaunchingPlatform(null);
       return;
     }
 
-    setLaunchingPlatform(platform.platform);
     setAgentNotice(null);
 
     try {

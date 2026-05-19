@@ -925,7 +925,40 @@ function createAutomationRunner({ app, sendState, logJob }) {
     }
   }
 
-  async function handleRegularCheckboxes(page, platform) {
+  async function checkboxContextText(checkbox) {
+    return checkbox.evaluate((node) => {
+      const element = node;
+      const label =
+        element.closest?.("label") ||
+        (element.id
+          ? document.querySelector(`label[for="${CSS.escape(element.id)}"]`)
+          : null);
+      const labelledBy = element.getAttribute?.("aria-labelledby");
+      const labelledText = labelledBy
+        ? labelledBy
+            .split(/\s+/)
+            .map((id) => document.getElementById(id)?.textContent || "")
+            .join(" ")
+        : "";
+      const ariaLabel = element.getAttribute?.("aria-label") || "";
+      const nearby = element.parentElement?.textContent || "";
+
+      return [ariaLabel, labelledText, label?.textContent || "", nearby]
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }).catch(() => "");
+  }
+
+  function isForbiddenCheckboxText(text) {
+    return /опубликовать позже|позже|дата|время|запланировать|партнерский материал/i.test(text);
+  }
+
+  function isRequiredAgreementCheckboxText(text) {
+    return /соглас|услов|правил|agreement|terms/i.test(text);
+  }
+
+  async function handleRegularCheckboxes(page, platform, scope = page) {
     await logStep(platform, "handle checkbox if present");
     const bodyText = (await getBodyText(page)).toLowerCase();
     if (/я не робот|not a robot|captcha|капч/.test(bodyText)) {
@@ -933,9 +966,9 @@ function createAutomationRunner({ app, sendState, logJob }) {
     }
 
     const checkboxes = [
-      page.getByRole("checkbox", { name: /соглас|услов|правил|agreement|terms/i }),
-      page.locator('label:has-text("соглас") input[type="checkbox"]'),
-      page.locator('input[type="checkbox"]'),
+      scope.getByRole("checkbox", { name: /соглас|услов|правил|agreement|terms/i }),
+      scope.locator('label:has-text("соглас") input[type="checkbox"]'),
+      scope.locator('input[type="checkbox"]'),
     ];
 
     for (const checkbox of checkboxes) {
@@ -943,6 +976,15 @@ function createAutomationRunner({ app, sendState, logJob }) {
       for (const item of items) {
         if (!(await item.isVisible({ timeout: 500 }).catch(() => false))) continue;
         if (await item.isChecked().catch(() => false)) continue;
+        const text = await checkboxContextText(item);
+        if (isForbiddenCheckboxText(text)) {
+          await logStep(platform, "skip forbidden checkbox", { text });
+          continue;
+        }
+        if (!isRequiredAgreementCheckboxText(text)) {
+          await logStep(platform, "skip non-required checkbox", { text });
+          continue;
+        }
         await humanClick(page, item).catch(() => undefined);
         return true;
       }
@@ -1124,19 +1166,34 @@ function createAutomationRunner({ app, sendState, logJob }) {
     await detectCaptcha(page, "dzen", "click publish");
 
     await logStep("dzen", "handle publish modal");
-    await handleRegularCheckboxes(page, "dzen");
     const modal = page.locator('[role="dialog"], [aria-modal="true"]').first();
     if (await modal.isVisible({ timeout: 5000 }).catch(() => false)) {
+      await handleRegularCheckboxes(page, "dzen", modal);
       const modalPublish = await findFirstVisible(
         [
           { locator: modal.getByRole("button", { name: /^опубликовать$/i }) },
           { locator: modal.locator("button").filter({ hasText: /^опубликовать$/i }) },
-          { locator: modal.getByRole("button", { name: /подтвердить|готово/i }) },
         ],
         "DZEN_CONFIRM_MODAL_NOT_FOUND",
         "Agent не смог подтвердить модалку публикации Дзена.",
         "handle publish modal",
       );
+      await modalPublish.waitFor({ state: "visible", timeout: 15_000 });
+      await modalPublish.waitFor({ state: "attached", timeout: 15_000 });
+      const enabledDeadline = Date.now() + 15_000;
+      while (Date.now() < enabledDeadline) {
+        if (await modalPublish.isEnabled().catch(() => false)) break;
+        await page.waitForTimeout(500);
+        await detectCaptcha(page, "dzen", "handle publish modal");
+      }
+      if (!(await modalPublish.isEnabled().catch(() => false))) {
+        throw automationError(
+          "DZEN_CONFIRM_MODAL_NOT_FOUND",
+          "Agent не смог подтвердить модалку публикации Дзена.",
+          "Final Dzen publish button stayed disabled.",
+          "handle publish modal",
+        );
+      }
       await humanClick(page, modalPublish);
     }
 
