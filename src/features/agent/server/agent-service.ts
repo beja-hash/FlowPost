@@ -100,6 +100,8 @@ function jobErrorCode(job: Pick<AgentJob, "result" | "error">) {
 
   if (
     explicitCode === "SESSION_EXPIRED" ||
+    explicitCode === "DZEN_SESSION_EXPIRED" ||
+    explicitCode === "VC_SESSION_EXPIRED" ||
     explicitCode === "NEED_RECONNECT" ||
     explicitCode === "WAITING_USER_LOGIN" ||
     message.includes("SESSION_EXPIRED") ||
@@ -128,7 +130,7 @@ function friendlyPublishError(job: Pick<AgentJob, "result" | "error">) {
     code === "DZEN_EDITOR_NOT_FOUND" ||
     code === "VC_EDITOR_NOT_FOUND"
   ) {
-    return "Не удалось найти редактор площадки. Откройте площадку через «Переподключить» и проверьте вход.";
+    return "Agent открыл площадку, но не смог найти редактор. Нажмите «Переподключить», проверьте вход и попробуйте снова.";
   }
 
   if (
@@ -136,7 +138,20 @@ function friendlyPublishError(job: Pick<AgentJob, "result" | "error">) {
     code === "DZEN_PUBLISH_BUTTON_NOT_FOUND" ||
     code === "VC_PUBLISH_BUTTON_NOT_FOUND"
   ) {
-    return "Не удалось найти кнопку публикации. Возможно, интерфейс площадки изменился.";
+    return "Текст вставлен, но не найдена кнопка публикации. Проверьте страницу в открытом браузере.";
+  }
+
+  if (code === "VC_NATIVE_DIALOG_NOT_HANDLED") {
+    return "VC.ru запросил подтверждение публикации, но Agent не смог его обработать. Попробуйте повторить публикацию.";
+  }
+
+  if (
+    code === "CAPTCHA_REQUIRED" ||
+    code === "WAITING_USER_ACTION" ||
+    code === "DZEN_CAPTCHA_REQUIRED" ||
+    code === "VC_CAPTCHA_REQUIRED"
+  ) {
+    return "Площадка запросила ручное подтверждение. Подтвердите действие в открытом браузере и повторите публикацию.";
   }
 
   return job.error ?? "Ошибка автоматизации публикации.";

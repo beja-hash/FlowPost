@@ -77,6 +77,7 @@ function logLifecycle(action, extra = {}) {
   };
 
   console.log("[flowpost-agent:lifecycle]", data);
+  console.log("[agent:lifecycle]", data);
   safeSend("agent:lifecycle", data);
 }
 
@@ -253,7 +254,8 @@ function stopAgentLoops() {
 }
 
 function shouldQuitAfterWakeJob() {
-  return String(process.env.AGENT_QUIT_AFTER_WAKE_JOB || "").toLowerCase() === "true";
+  const raw = process.env.AGENT_QUIT_AFTER_WAKE_JOB;
+  return raw === undefined ? true : String(raw).toLowerCase() === "true";
 }
 
 function scheduleQuitAfterWakeJob() {
@@ -263,15 +265,20 @@ function scheduleQuitAfterWakeJob() {
     return;
   }
 
+  logLifecycle("job finished");
+
   if (activeJobId || runner?.hasVisibleBrowser?.()) {
     return;
   }
 
+  logLifecycle("no pending jobs");
+  logLifecycle("quit after wake scheduled");
   quitAfterWakeTimer = setTimeout(() => {
     if (activeJobId || runner?.hasVisibleBrowser?.()) {
       return;
     }
 
+    logLifecycle("quitting after wake job");
     logLifecycle("app:quit-after-wake-job");
     isQuitting = true;
     stopAgentLoops();
@@ -643,6 +650,7 @@ function handleProtocolUrl(url) {
 
   if (action === "wake" || action === "open-background") {
     wakeOnDemandMode = true;
+    logLifecycle("wake mode enabled", { action });
   }
 
   if (action === "pair" && code) {
@@ -684,6 +692,28 @@ function shouldStartHidden(argv) {
     return action === "wake" || action === "open-background";
   } catch {
     return false;
+  }
+}
+
+function initializeWakeModeFromArgv(argv) {
+  if (argv.includes("--background") || argv.includes("--hidden")) {
+    wakeOnDemandMode = true;
+    logLifecycle("wake mode enabled", { source: "argv" });
+    return;
+  }
+
+  const protocolArg = argv.find((arg) => arg.startsWith("flowpost-agent://"));
+  if (!protocolArg) return;
+
+  try {
+    const parsed = new URL(protocolArg);
+    const action = parsed.hostname || parsed.pathname.replace(/^\//, "");
+    if (action === "wake" || action === "open-background") {
+      wakeOnDemandMode = true;
+      logLifecycle("wake mode enabled", { action });
+    }
+  } catch {
+    // Ignore malformed protocol args here; handleProtocolArgv logs them later.
   }
 }
 
@@ -794,6 +824,7 @@ app.whenReady().then(async () => {
   await readSettings();
   setAutoLaunch(settings.autoLaunch === true);
   createTray();
+  initializeWakeModeFromArgv(process.argv);
   createWindow({ show: !shouldStartHidden(process.argv) });
   handleProtocolArgv(process.argv);
   mainWindow.webContents.once("did-finish-load", () => {

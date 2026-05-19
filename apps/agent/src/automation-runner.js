@@ -3,6 +3,10 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 
 const SUPPORTED_PLATFORMS = new Set(["dzen", "vc"]);
+const DZEN_HOME_URL = "https://dzen.ru/";
+const VC_HOME_URL = "https://vc.ru/";
+const VC_NEW_URL = "https://vc.ru/new";
+const DEBUG_ERROR_BROWSER_HOLD_MS = 45_000;
 
 class UserCancelledBrowserError extends Error {
   constructor(message = "Браузер был закрыт пользователем.") {
@@ -31,8 +35,11 @@ function normalizePlatform(platform) {
   const normalized = String(platform || "default")
     .trim()
     .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/\.ru$/, "")
     .replace(/[^a-z0-9_-]/g, "");
 
+  if (normalized === "vcru") return "vc";
   return normalized || "default";
 }
 
@@ -87,6 +94,23 @@ function createAutomationRunner({ app, sendState, logJob }) {
     }
 
     return false;
+  }
+
+  function isDebugVisiblePublish(job, headless) {
+    const jobType = normalizeJobType(job.type);
+    return (
+      !headless &&
+      (jobType === "publish_article" || jobType === "scheduled_publish")
+    );
+  }
+
+  function platformLabel(platform) {
+    return normalizePlatform(platform) === "dzen" ? "dzen" : "vc";
+  }
+
+  async function logStep(platform, step, extra = {}) {
+    const label = platformLabel(platform);
+    console.log(`[agent:${label}] ${step}`, extra);
   }
 
   function profilePath(platform) {
@@ -336,7 +360,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
 
     if (page.isClosed()) {
       activePage = null;
-      return openPage(platform, url);
+      return openPage(platform, url, options);
     }
 
     await page.goto(url, { waitUntil: "domcontentloaded" });
@@ -471,7 +495,6 @@ function createAutomationRunner({ app, sendState, logJob }) {
     const editorUrl = payload.platformEditorUrl || payload.editorUrl;
     const content = payload.content || payload.body;
 
-    if (!editorUrl) missing.push("platformEditorUrl");
     if (!content) missing.push("content");
 
     if (missing.length > 0) {
@@ -492,7 +515,6 @@ function createAutomationRunner({ app, sendState, logJob }) {
   async function runPublishArticleJob(job, updateJobStatus) {
     const payload = validatePublishPayload(job);
     const platform = normalizePlatform(job.platform || job.payload?.platform);
-    const editorUrl = payload.editorUrl;
     const title = payload.title;
     const body = [
       payload.content,
@@ -503,6 +525,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
       .join("\n\n");
 
     const headless = shouldRunHeadless(job);
+    const visibleDebugMode = isDebugVisiblePublish(job, headless);
     await updateJobStatus(job.id, "running");
     setBrowserState("running_job", { status: "publishing" });
     console.log("[agent] publish mode", {
@@ -519,15 +542,24 @@ function createAutomationRunner({ app, sendState, logJob }) {
     });
     await logJob(job.id, "Публикация запущена в локальном браузере Agent.");
 
-    const { page } = await openPage(platform, editorUrl, { headless });
+    let page = null;
 
     try {
-      if (await looksLikeLoginPage(page)) {
-        throw new SessionExpiredError();
+      if (platform === "dzen") {
+        const opened = await openPage(platform, DZEN_HOME_URL, { headless });
+        page = opened.page;
+        await publishToDzen(page, { ...payload, title, body, content: body });
+      } else if (platform === "vc") {
+        const opened = await openPage(platform, VC_HOME_URL, { headless });
+        page = opened.page;
+        await publishToVc(page, { ...payload, title, body, content: body });
+      } else {
+        throw new AutomationError(
+          "UNSUPPORTED_PLATFORM",
+          "Эта площадка пока не поддерживается Agent.",
+          `Unsupported publish platform: ${platform}`,
+        );
       }
-
-      await fillEditorFields(page, { title, content: body, platform });
-      await clickPublish(page, platform);
 
       if (await looksLikeLoginPage(page)) {
         throw new SessionExpiredError();
@@ -548,11 +580,19 @@ function createAutomationRunner({ app, sendState, logJob }) {
       });
       setBrowserState("idle", { status: "publish_completed" });
     } catch (error) {
+      const errorMeta = await capturePublishError({
+        page,
+        job,
+        platform,
+        error,
+      });
+
       if (error instanceof SessionExpiredError) {
         console.log("[agent] session expired", {
           id: job.id,
           platform,
-          url: page.url(),
+          url: page?.url?.() ?? null,
+          ...errorMeta,
         });
         await updateJobStatus(job.id, "failed", {
           error: error.message,
@@ -561,6 +601,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
             code: error.code,
             platform,
             articleId: payload.articleId,
+            ...errorMeta,
           },
         });
         await logJob(job.id, error.message, "warning");
@@ -582,6 +623,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
         platform,
         error: technicalMessage,
         code,
+        ...errorMeta,
       });
       await updateJobStatus(job.id, "failed", {
         error: message,
@@ -591,9 +633,13 @@ function createAutomationRunner({ app, sendState, logJob }) {
           platform,
           articleId: payload.articleId,
           technicalError: technicalMessage,
+          ...errorMeta,
         },
       }).catch(() => undefined);
       await logJob(job.id, technicalMessage, "error");
+      if (visibleDebugMode && page && !page.isClosed()) {
+        await page.waitForTimeout(DEBUG_ERROR_BROWSER_HOLD_MS).catch(() => undefined);
+      }
       throw error;
     } finally {
       await closeActiveContext();
@@ -629,65 +675,657 @@ function createAutomationRunner({ app, sendState, logJob }) {
     return loginElements.isVisible({ timeout: 1500 }).catch(() => false);
   }
 
-  async function clickPublish(page, platform) {
-    const selectors =
-      platform === "dzen"
-        ? [
-            'button:has-text("Опубликовать")',
-            'button:has-text("Публикация")',
-            'button:has-text("Далее")',
-            'button:has-text("Готово")',
-            '[role="button"]:has-text("Опубликовать")',
-          ]
-        : [
-            'button:has-text("Опубликовать")',
-            'button:has-text("Publish")',
-            'button:has-text("Далее")',
-            '[role="button"]:has-text("Опубликовать")',
-            '[role="button"]:has-text("Publish")',
-          ];
+  async function capturePublishError({ page, job, platform, error }) {
+    const step =
+      error instanceof AutomationError && error.step
+        ? error.step
+        : error instanceof SessionExpiredError
+          ? "check session"
+          : "publish";
+    const code =
+      error instanceof AutomationError
+        ? error.code
+        : error instanceof SessionExpiredError
+          ? error.code
+          : "AUTOMATION_EXCEPTION";
+    const meta = {
+      platform,
+      step,
+      currentUrl: null,
+      pageTitle: null,
+      visibleEditablesCount: null,
+      errorCode: code,
+      screenshotPath: null,
+    };
 
-    const clicked = await clickFirstVisibleButton(page, selectors);
-
-    if (!clicked) {
-      throw new AutomationError(
-        `${platform.toUpperCase()}_PUBLISH_BUTTON_NOT_FOUND`,
-        "Не удалось найти кнопку публикации. Возможно, интерфейс площадки изменился.",
-      );
+    if (!page || page.isClosed()) {
+      console.log("[agent] publish error diagnostics", meta);
+      return meta;
     }
 
-    await page.waitForLoadState("domcontentloaded").catch(() => undefined);
-    await page.waitForTimeout(1200);
-    await clickFirstVisibleButton(page, [
-      'button:has-text("Опубликовать")',
-      'button:has-text("Подтвердить")',
-      'button:has-text("Publish")',
-      '[role="button"]:has-text("Опубликовать")',
-      '[role="button"]:has-text("Подтвердить")',
-      '[role="button"]:has-text("Publish")',
-    ]);
-    await page.waitForTimeout(2500);
+    try {
+      meta.currentUrl = page.url();
+      meta.pageTitle = await page.title().catch(() => null);
+      meta.visibleEditablesCount = (await getVisibleEditables(page)).length;
+      const screenshotsDir = path.join(app.getPath("userData"), "logs", "screenshots");
+      await fs.mkdir(screenshotsDir, { recursive: true });
+      const safePlatform = normalizePlatform(platform);
+      const fileName = `${Date.now()}-${safePlatform}-${job.id}-${code}.png`.replace(
+        /[^a-z0-9_.-]/gi,
+        "_",
+      );
+      meta.screenshotPath = path.join(screenshotsDir, fileName);
+      await page.screenshot({ path: meta.screenshotPath, fullPage: true }).catch(
+        () => undefined,
+      );
+    } catch (diagnosticsError) {
+      console.log("[agent] publish error diagnostics failed", {
+        error:
+          diagnosticsError instanceof Error
+            ? diagnosticsError.message
+            : String(diagnosticsError),
+      });
+    }
+
+    console.log("[agent] publish error diagnostics", meta);
+    return meta;
   }
 
-  async function clickFirstVisibleButton(page, selectors) {
-    for (const selector of selectors) {
-      const buttons = await page.locator(selector).all();
+  function automationError(code, message, technicalMessage, step) {
+    const error = new AutomationError(code, message, technicalMessage);
+    error.step = step;
+    return error;
+  }
 
-      for (const button of buttons) {
-        if (!(await button.isVisible({ timeout: 1000 }).catch(() => false))) {
-          continue;
+  async function waitForNetworkSettled(page, timeout = 15_000) {
+    await page.waitForLoadState("networkidle", { timeout }).catch(() => undefined);
+  }
+
+  async function humanDelay(min = 300, max = 1200) {
+    const delay = Math.floor(Math.random() * (max - min + 1)) + min;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+
+  async function waitVisibleEnabled(locator, timeout = 20_000) {
+    const element = locator.first();
+    const deadline = Date.now() + timeout;
+
+    await element.waitFor({ state: "visible", timeout });
+    await element.scrollIntoViewIfNeeded({ timeout: 10_000 }).catch(() => undefined);
+    await element.waitFor({ state: "attached", timeout: 10_000 }).catch(
+      () => undefined,
+    );
+    await element.waitFor({ state: "visible", timeout: 10_000 });
+
+    while (Date.now() < deadline) {
+      const enabled = await element
+        .evaluate((node) => {
+          const htmlElement = node;
+          const disabled =
+            htmlElement.hasAttribute("disabled") ||
+            htmlElement.getAttribute("aria-disabled") === "true";
+
+          return !disabled;
+        })
+        .catch(() => false);
+
+      if (enabled) {
+        return element;
+      }
+
+      await humanDelay(350, 800);
+    }
+
+    throw new Error("Element is disabled.");
+  }
+
+  async function waitFirstVisible(locator, timeout = 3500) {
+    const deadline = Date.now() + timeout;
+    let lastError = null;
+
+    while (Date.now() < deadline) {
+      try {
+        const items = await locator.all();
+
+        for (const item of items) {
+          if (await item.isVisible({ timeout: 500 }).catch(() => false)) {
+            return item;
+          }
         }
+      } catch (error) {
+        lastError = error;
+      }
 
-        if (!(await button.isEnabled({ timeout: 1000 }).catch(() => true))) {
-          continue;
-        }
+      await humanDelay(200, 450);
+    }
 
-        await button.click({ timeout: 10_000 });
+    if (lastError) throw lastError;
+    throw new Error("Visible element not found.");
+  }
+
+  async function moveMouseToElement(page, locator) {
+    const element = locator.first();
+    const box = await element.boundingBox();
+
+    if (!box) {
+      await element.hover({ timeout: 10_000 }).catch(() => undefined);
+      return;
+    }
+
+    const targetX = box.x + box.width / 2 + Math.floor(Math.random() * 10) - 5;
+    const targetY = box.y + box.height / 2 + Math.floor(Math.random() * 10) - 5;
+    const startX = Math.max(12, targetX - 80 - Math.floor(Math.random() * 120));
+    const startY = Math.max(12, targetY - 40 - Math.floor(Math.random() * 80));
+
+    await page.mouse.move(startX, startY, { steps: 8 });
+    await humanDelay(160, 420);
+    await page.mouse.move(targetX, targetY, {
+      steps: 18 + Math.floor(Math.random() * 12),
+    });
+  }
+
+  async function humanClick(page, locator) {
+    const element = await waitVisibleEnabled(locator);
+    await humanDelay(240, 680);
+    await moveMouseToElement(page, element);
+    await humanDelay(180, 420);
+    const box = await element.boundingBox();
+
+    if (box) {
+      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, {
+        delay: Math.floor(Math.random() * 80) + 40,
+      });
+    } else {
+      await element.click({ timeout: 10_000 });
+    }
+
+    await humanDelay(450, 950);
+  }
+
+  async function focusEditable(page, locator) {
+    const element = await waitVisibleEnabled(locator);
+    await moveMouseToElement(page, element);
+    await humanDelay(180, 420);
+    await element.click({ timeout: 10_000 });
+    await humanDelay(150, 350);
+    await element.evaluate((node) => {
+      if (node instanceof HTMLElement) node.focus();
+    });
+    return element;
+  }
+
+  async function humanType(page, locator, text) {
+    const element = await focusEditable(page, locator);
+    const modifier = process.platform === "darwin" ? "Meta" : "Control";
+    await page.keyboard.press(`${modifier}+A`).catch(() => undefined);
+    await humanDelay(120, 280);
+    await page.keyboard.press("Backspace").catch(() => undefined);
+    await humanDelay(150, 350);
+
+    for (const char of text) {
+      await page.keyboard.type(char, {
+        delay: Math.floor(Math.random() * 81) + 40,
+      });
+    }
+
+    await humanDelay(450, 900);
+    await element.evaluate((node) => {
+      node.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      node.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  }
+
+  async function pasteText(page, text, locator = null) {
+    const element = locator ? await focusEditable(page, locator) : null;
+    if (element) {
+      const modifier = process.platform === "darwin" ? "Meta" : "Control";
+      await page.keyboard.press(`${modifier}+A`).catch(() => undefined);
+      await humanDelay(120, 280);
+      await page.keyboard.press("Backspace").catch(() => undefined);
+      await humanDelay(150, 350);
+    }
+
+    await page.keyboard.insertText(text);
+    await humanDelay(800, 1400);
+    await page.evaluate(() => {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement) {
+        active.dispatchEvent(new InputEvent("input", { bubbles: true }));
+        active.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    }).catch(() => undefined);
+  }
+
+  async function findFirstVisible(candidates, errorCode, message, step) {
+    for (const candidate of candidates) {
+      try {
+        return await waitFirstVisible(candidate.locator, candidate.timeout ?? 3500);
+      } catch {
+        // Try the next platform selector.
+      }
+    }
+
+    throw automationError(errorCode, message, `Unable to find ${step}.`, step);
+  }
+
+  async function getBodyText(page) {
+    return page.locator("body").innerText({ timeout: 5000 }).catch(() => "");
+  }
+
+  async function detectCaptcha(page, platform, step) {
+    const bodyText = (await getBodyText(page)).toLowerCase();
+    if (/captcha|капч|я не робот|not a robot|robot check|подтвердите.*робот/.test(bodyText)) {
+      const code = platform === "dzen" ? "DZEN_CAPTCHA_REQUIRED" : "VC_CAPTCHA_REQUIRED";
+      throw automationError(
+        code,
+        "Площадка запросила ручное подтверждение. Подтвердите действие в открытом браузере и повторите публикацию.",
+        `${platform} captcha or robot check detected.`,
+        step,
+      );
+    }
+  }
+
+  async function handleRegularCheckboxes(page, platform) {
+    await logStep(platform, "handle checkbox if present");
+    const bodyText = (await getBodyText(page)).toLowerCase();
+    if (/я не робот|not a robot|captcha|капч/.test(bodyText)) {
+      await detectCaptcha(page, platform, "handle checkbox if present");
+    }
+
+    const checkboxes = [
+      page.getByRole("checkbox", { name: /соглас|услов|правил|agreement|terms/i }),
+      page.locator('label:has-text("соглас") input[type="checkbox"]'),
+      page.locator('input[type="checkbox"]'),
+    ];
+
+    for (const checkbox of checkboxes) {
+      const items = await checkbox.all().catch(() => []);
+      for (const item of items) {
+        if (!(await item.isVisible({ timeout: 500 }).catch(() => false))) continue;
+        if (await item.isChecked().catch(() => false)) continue;
+        await humanClick(page, item).catch(() => undefined);
         return true;
       }
     }
 
     return false;
+  }
+
+  async function waitForAutosave(page, platform) {
+    await logStep(platform, "wait autosave");
+    const code = platform === "dzen" ? "DZEN_AUTOSAVE_TIMEOUT" : "VC_AUTOSAVE_TIMEOUT";
+    const savingPattern = /сохранени|сохраня|saving/i;
+    const savedPattern = /сохранено|saved|черновик сохран/i;
+
+    try {
+      await page.waitForFunction(
+        ({ savingSource, savedSource }) => {
+          const text = document.body?.innerText ?? "";
+          const saving = new RegExp(savingSource, "i").test(text);
+          const saved = new RegExp(savedSource, "i").test(text);
+          return saved || !saving;
+        },
+        {
+          savingSource: savingPattern.source,
+          savedSource: savedPattern.source,
+        },
+        { timeout: 30_000 },
+      );
+    } catch (error) {
+      throw automationError(
+        code,
+        "Agent не дождался автосохранения на площадке.",
+        error instanceof Error ? error.message : "Autosave timeout.",
+        "wait autosave",
+      );
+    }
+  }
+
+  async function editorLooksOpen(page, minimumFields = 1) {
+    const editables = await getVisibleEditables(page);
+    return editables.length >= minimumFields;
+  }
+
+  async function tryOpenEditorUrl(page, platform, editorUrl, minimumFields) {
+    if (!editorUrl) return false;
+
+    await logStep(platform, "open editor url if provided", { editorUrl });
+    await page.goto(editorUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    await waitForNetworkSettled(page);
+    await humanDelay(700, 1300);
+
+    if (await looksLikeLoginPage(page)) {
+      throw new SessionExpiredError();
+    }
+
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      if (await editorLooksOpen(page, minimumFields)) return true;
+      await page.waitForTimeout(400);
+    }
+
+    return false;
+  }
+
+  async function publishToDzen(page, payload) {
+    await logStep("dzen", "open dzen");
+    await page.goto(DZEN_HOME_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    await waitForNetworkSettled(page);
+    await humanDelay(800, 1600);
+
+    await logStep("dzen", "check session");
+    if (await looksLikeLoginPage(page)) {
+      throw automationError(
+        "DZEN_SESSION_EXPIRED",
+        "Сессия площадки истекла. Нажмите «Переподключить», чтобы войти заново.",
+        "Dzen session expired.",
+        "check session",
+      );
+    }
+
+    const openedByUrl = await tryOpenEditorUrl(page, "dzen", payload.editorUrl, 2);
+
+    if (!openedByUrl) {
+      await logStep("dzen", "open profile/studio");
+      await logStep("dzen", "click profile menu");
+      const profileButton = await findFirstVisible(
+        [
+          {
+            locator: page.getByRole("button", {
+              name: /профиль|аккаунт|profile|account|user|avatar/i,
+            }),
+          },
+          {
+            locator: page.locator(
+              '[aria-label*="проф" i], [aria-label*="аккаунт" i], [aria-label*="profile" i], [aria-label*="account" i]',
+            ),
+          },
+          {
+            locator: page.locator(
+              '[data-testid*="profile" i], [data-testid*="avatar" i], [data-testid*="user" i]',
+            ),
+          },
+          {
+            locator: page
+              .locator("header button, header a")
+              .filter({
+                has: page.locator(
+                  'img[alt*="avatar" i], img[alt*="profile" i], img[alt*="проф" i]',
+                ),
+              }),
+          },
+        ],
+        "DZEN_SESSION_EXPIRED",
+        "Сессия площадки истекла. Нажмите «Переподключить», чтобы войти заново.",
+        "click profile menu",
+      );
+      await humanClick(page, profileButton);
+
+      await logStep("dzen", "click create publication");
+      const createPublication = await findFirstVisible(
+        [
+          { locator: page.getByRole("button", { name: /создать публикацию/i }) },
+          { locator: page.getByRole("menuitem", { name: /создать публикацию/i }) },
+          { locator: page.getByText(/создать публикацию/i) },
+        ],
+        "DZEN_CREATE_BUTTON_NOT_FOUND",
+        "Agent открыл Дзен, но не нашел кнопку создания публикации.",
+        "click create publication",
+      );
+      await humanClick(page, createPublication);
+
+      await logStep("dzen", "click write article");
+      const writeArticle = await findFirstVisible(
+        [
+          { locator: page.getByRole("button", { name: /написать статью/i }) },
+          { locator: page.getByRole("menuitem", { name: /написать статью/i }) },
+          { locator: page.getByText(/написать статью/i) },
+        ],
+        "DZEN_WRITE_ARTICLE_NOT_FOUND",
+        "Agent открыл Дзен, но не нашел пункт «Написать статью».",
+        "click write article",
+      );
+      await humanClick(page, writeArticle);
+    }
+
+    const editables = await waitForVisibleEditables(page, 2, "dzen");
+    await logStep("dzen", "editor opened", { url: page.url() });
+    await logStep("dzen", "visible editables count", { count: editables.length });
+
+    const titleField = editables[0]?.locator;
+    const bodyField = editables[1]?.locator;
+    if (!titleField || !bodyField || editables[0].meta.key === editables[1].meta.key) {
+      throw editorNotFoundError("dzen", `visibleEditables=${editables.length}`);
+    }
+
+    await logStep("dzen", "fill title");
+    await humanType(page, titleField, payload.title);
+    await logStep("dzen", "title filled");
+
+    await logStep("dzen", "paste body");
+    await pasteText(page, payload.body, bodyField);
+    await logStep("dzen", "body pasted");
+    await waitForAutosave(page, "dzen");
+    await detectCaptcha(page, "dzen", "wait autosave");
+
+    await logStep("dzen", "click publish");
+    const publishButton = await findFirstVisible(
+      [
+        { locator: page.getByRole("button", { name: /^опубликовать$/i }) },
+        { locator: page.locator("button").filter({ hasText: /^опубликовать$/i }) },
+        { locator: page.getByText(/^опубликовать$/i) },
+      ],
+      "DZEN_PUBLISH_BUTTON_NOT_FOUND",
+      "Текст вставлен, но не найдена кнопка публикации. Проверьте страницу в открытом браузере.",
+      "click publish",
+    );
+    const previousUrl = page.url();
+    await humanClick(page, publishButton);
+    await detectCaptcha(page, "dzen", "click publish");
+
+    await logStep("dzen", "handle publish modal");
+    await handleRegularCheckboxes(page, "dzen");
+    const modal = page.locator('[role="dialog"], [aria-modal="true"]').first();
+    if (await modal.isVisible({ timeout: 5000 }).catch(() => false)) {
+      const modalPublish = await findFirstVisible(
+        [
+          { locator: modal.getByRole("button", { name: /^опубликовать$/i }) },
+          { locator: modal.locator("button").filter({ hasText: /^опубликовать$/i }) },
+          { locator: modal.getByRole("button", { name: /подтвердить|готово/i }) },
+        ],
+        "DZEN_CONFIRM_MODAL_NOT_FOUND",
+        "Agent не смог подтвердить модалку публикации Дзена.",
+        "handle publish modal",
+      );
+      await humanClick(page, modalPublish);
+    }
+
+    await waitForPublishCompletion(page, "dzen", previousUrl);
+    await logStep("dzen", "completed", { publishedUrl: page.url() });
+  }
+
+  async function publishToVc(page, payload) {
+    await logStep("vc", "open vc");
+    const editorUrl = payload.editorUrl || VC_NEW_URL;
+    await page.goto(editorUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    await waitForNetworkSettled(page);
+    await humanDelay(800, 1500);
+
+    await logStep("vc", "check session");
+    if (await looksLikeLoginPage(page)) {
+      throw automationError(
+        "VC_SESSION_EXPIRED",
+        "Сессия площадки истекла. Нажмите «Переподключить», чтобы войти заново.",
+        "VC.ru session expired.",
+        "check session",
+      );
+    }
+
+    if (!(await editorLooksOpen(page, 1))) {
+      await logStep("vc", "click write");
+      const writeButton = await findFirstVisible(
+        [
+          { locator: page.getByRole("button", { name: /^написать$/i }) },
+          { locator: page.locator("button").filter({ hasText: /^написать$/i }) },
+          { locator: page.getByRole("link", { name: /^написать$/i }) },
+          { locator: page.getByText(/^написать$/i) },
+        ],
+        "VC_WRITE_BUTTON_NOT_FOUND",
+        "Agent открыл VC.ru, но не нашел кнопку «Написать».",
+        "click write",
+      );
+      await humanClick(page, writeButton);
+    }
+
+    const editables = await waitForVisibleEditables(page, 1, "vc");
+    await logStep("vc", "editor opened", {
+      url: page.url(),
+      visibleEditables: editables.length,
+    });
+    const titleField = editables[0]?.locator;
+    if (!titleField) {
+      throw editorNotFoundError("vc", `visibleEditables=${editables.length}`);
+    }
+
+    await logStep("vc", "fill title");
+    await humanType(page, titleField, payload.title);
+    await logStep("vc", "title filled");
+
+    await logStep("vc", "press enter");
+    await page.keyboard.press("Enter");
+    await humanDelay(500, 1000);
+
+    await logStep("vc", "paste body");
+    await pasteText(page, payload.body);
+    await logStep("vc", "body pasted");
+    await waitForAutosave(page, "vc");
+    await detectCaptcha(page, "vc", "wait autosave");
+
+    await logStep("vc", "prepare native dialog handler");
+    const dialogPromise = prepareVcNativeDialogHandler(page);
+
+    await logStep("vc", "click publish");
+    const previousUrl = page.url();
+    const publishButton = await findFirstVisible(
+      [
+        { locator: page.getByRole("button", { name: /^опубликовать$/i }) },
+        { locator: page.locator("button").filter({ hasText: /^опубликовать$/i }) },
+        { locator: page.getByText(/^опубликовать$/i) },
+      ],
+      "VC_PUBLISH_BUTTON_NOT_FOUND",
+      "Текст вставлен, но не найдена кнопка публикации. Проверьте страницу в открытом браузере.",
+      "click publish",
+    );
+    await humanClick(page, publishButton);
+
+    const dialogResult = await dialogPromise;
+    if (dialogResult.error) {
+      throw automationError(
+        "VC_NATIVE_DIALOG_NOT_HANDLED",
+        "VC.ru запросил подтверждение публикации, но Agent не смог его обработать. Попробуйте повторить публикацию.",
+        dialogResult.error,
+        "prepare native dialog handler",
+      );
+    }
+
+    await logStep("vc", "handle confirm modal");
+    await handleVcConfirmModal(page);
+    await waitForPublishCompletion(page, "vc", previousUrl);
+    await logStep("vc", "completed", { publishedUrl: page.url() });
+  }
+
+  function prepareVcNativeDialogHandler(page) {
+    let settled = false;
+    let timeout = null;
+    let handler = null;
+
+    return new Promise((resolve) => {
+      handler = async (dialog) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        try {
+          await logStep("vc", "native dialog", {
+            type: dialog.type(),
+            message: dialog.message(),
+          });
+
+          if (dialog.type() === "confirm" || dialog.type() === "alert") {
+            await humanDelay(300, 800);
+            await dialog.accept();
+            await logStep("vc", "native dialog accepted");
+          } else {
+            await dialog.accept();
+          }
+
+          resolve({ handled: true });
+        } catch (error) {
+          resolve({
+            handled: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      };
+
+      page.once("dialog", handler);
+      timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        page.off("dialog", handler);
+        resolve({ handled: false });
+      }, 15_000);
+    });
+  }
+
+  async function handleVcConfirmModal(page) {
+    const modal = page.locator('[role="dialog"], [aria-modal="true"]').first();
+    if (!(await modal.isVisible({ timeout: 5000 }).catch(() => false))) {
+      return false;
+    }
+
+    const confirm = await findFirstVisible(
+      [
+        { locator: modal.getByRole("button", { name: /ok|опубликовать|подтвердить|готово/i }) },
+        { locator: modal.locator("button").filter({ hasText: /ok|опубликовать|подтвердить|готово/i }) },
+      ],
+      "VC_CONFIRM_MODAL_NOT_FOUND",
+      "Agent не смог подтвердить окно публикации VC.ru.",
+      "handle confirm modal",
+    );
+    await humanClick(page, confirm);
+    return true;
+  }
+
+  async function waitForPublishCompletion(page, platform, previousUrl) {
+    const successText = /пост опубликован|публикация опубликована|опубликовано|published|готово/i;
+
+    try {
+      await Promise.race([
+        page.waitForURL(
+          (url) => {
+            const nextUrl = url.toString();
+            return nextUrl !== previousUrl && !/\/new\b|\bmodal=editor\b/.test(nextUrl);
+          },
+          { timeout: 120_000, waitUntil: "domcontentloaded" },
+        ),
+        page.getByText(successText).first().waitFor({
+          state: "visible",
+          timeout: 120_000,
+        }),
+      ]);
+      await waitForNetworkSettled(page, 30_000);
+    } catch (error) {
+      const code =
+        platform === "dzen"
+          ? "DZEN_CONFIRM_MODAL_NOT_FOUND"
+          : "VC_CONFIRM_MODAL_NOT_FOUND";
+      throw automationError(
+        code,
+        "Agent не смог подтвердить, что публикация была выполнена.",
+        error instanceof Error ? error.message : "Publish confirmation timeout.",
+        platform === "dzen" ? "handle publish modal" : "handle confirm modal",
+      );
+    }
   }
 
   async function getVisibleEditables(page) {
@@ -780,125 +1418,24 @@ function createAutomationRunner({ app, sendState, logJob }) {
     return result;
   }
 
-  function fieldText(meta) {
-    return [
-      meta.placeholder,
-      meta.ariaLabel,
-      meta.role,
-      meta.testId,
-      meta.id,
-      meta.name,
-      meta.className,
-      meta.text,
-      meta.value,
-    ]
-      .join(" ")
-      .toLowerCase();
-  }
-
-  function scoreTitleField(field, platform) {
-    const text = fieldText(field.meta);
-    let score = 0;
-
-    if (/title|headline|heading|заголов/.test(text)) score += 20;
-    if (/name|назван/.test(text)) score += 4;
-    if (field.meta.tagName === "input") score += 4;
-    if (field.meta.tagName === "textarea") score += 2;
-    if (field.meta.contentEditable) score += 1;
-    if (/body|content|article|editor|текст|пост|материал/.test(text)) {
-      score -= 8;
-    }
-    if (platform === "dzen" && /title|заголов/.test(text)) score += 5;
-    if (platform === "vc" && /title|заголов/.test(text)) score += 5;
-
-    return score;
-  }
-
-  function scoreBodyField(field, platform) {
-    const text = fieldText(field.meta);
-    let score = 0;
-
-    if (/body|content|article|editor|text|story|текст|пост|материал|редактор/.test(text)) {
-      score += 18;
-    }
-    if (field.meta.contentEditable) score += 6;
-    if (field.meta.tagName === "textarea") score += 4;
-    if (field.meta.role === "textbox") score += 3;
-    if (field.meta.tagName === "input") score -= 6;
-    if (/title|headline|heading|заголов/.test(text)) score -= 10;
-    if (platform === "dzen" && /editor|body|content|текст/.test(text)) score += 4;
-    if (platform === "vc" && /editor|body|content|текст/.test(text)) score += 4;
-
-    return score;
-  }
-
-  async function waitForVisibleEditables(page) {
+  async function waitForVisibleEditables(page, minimumCount = 2, platform = "default") {
     const deadline = Date.now() + 30_000;
     let editables = [];
 
     while (Date.now() < deadline) {
       editables = await getVisibleEditables(page);
-      if (editables.length >= 2) return editables;
+      if (editables.length >= minimumCount) return editables;
       await page.waitForTimeout(500);
     }
 
-    return editables;
-  }
-
-  function pickBestField(fields, scorer) {
-    return [...fields]
-      .map((field) => ({ field, score: scorer(field) }))
-      .sort((left, right) => right.score - left.score || left.field.index - right.field.index)[0];
-  }
-
-  async function fillEditorFields(page, { title, content, platform }) {
-    const editables = await waitForVisibleEditables(page);
-    console.log("[agent] visible editable fields", {
-      platform,
-      count: editables.length,
-      fields: editables.map((field) => ({
-        index: field.index,
-        tagName: field.meta.tagName,
-        type: field.meta.type,
-        placeholder: field.meta.placeholder,
-        ariaLabel: field.meta.ariaLabel,
-        role: field.meta.role,
-        testId: field.meta.testId,
-        id: field.meta.id,
-        name: field.meta.name,
-      })),
-    });
-
-    if (editables.length === 0) {
-      throw editorNotFoundError(platform, "No visible editable fields found.");
-    }
-
-    const titleRank = pickBestField(editables, (field) =>
-      scoreTitleField(field, platform),
-    );
-    const titleField =
-      titleRank && titleRank.score > 0 ? titleRank.field : editables[0];
-    const bodyCandidates = editables.filter(
-      (field) => field.meta.key !== titleField.meta.key,
-    );
-    const bodyRank = pickBestField(bodyCandidates, (field) =>
-      scoreBodyField(field, platform),
-    );
-    const bodyField =
-      bodyRank && bodyRank.score > 0 ? bodyRank.field : bodyCandidates[0];
-
-    if (!titleField || !bodyField) {
+    if (minimumCount > 0 && editables.length < minimumCount) {
       throw editorNotFoundError(
         platform,
         `Editor fields not found. visibleEditables=${editables.length}`,
       );
     }
 
-    await fillEditableField(page, titleField, title);
-    if (platform === "vc") {
-      await page.keyboard.press("Enter").catch(() => undefined);
-    }
-    await fillEditableField(page, bodyField, content);
+    return editables;
   }
 
   function editorNotFoundError(platform, technicalMessage) {
@@ -915,20 +1452,6 @@ function createAutomationRunner({ app, sendState, logJob }) {
       "Не удалось найти редактор площадки. Откройте площадку через «Переподключить» и проверьте вход.",
       technicalMessage,
     );
-  }
-
-  async function fillEditableField(page, field, value) {
-    const { locator, meta } = field;
-
-    if (meta.tagName === "input" || meta.tagName === "textarea") {
-      await locator.fill(value, { timeout: 20_000 });
-      return;
-    }
-
-    await locator.click({ timeout: 20_000 });
-    const modifier = process.platform === "darwin" ? "Meta" : "Control";
-    await page.keyboard.press(`${modifier}+A`).catch(() => undefined);
-    await page.keyboard.insertText(value);
   }
 
   async function deleteProfiles() {
