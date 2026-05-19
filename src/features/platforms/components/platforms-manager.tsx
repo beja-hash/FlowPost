@@ -220,9 +220,15 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
     };
   }, [selectedPlatform]);
 
-  function openAgent() {
-    window.location.href = "flowpost-agent://wake";
-    toast.info("Запускаем FlowPost Agent...");
+  async function openAgent() {
+    const nextAgent = await openAgentAndWait({
+      onStatus: (message) => toast.info(message),
+    });
+    setAgentState(nextAgent);
+
+    if (nextAgent.state === "active") {
+      setAgentNotice(null);
+    }
   }
 
   function showAgentSetup(nextState: AgentStateName = agentState.state) {
@@ -502,7 +508,7 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
       <AgentStatePanel
         agent={agentState}
         notice={agentNotice}
-        onOpenAgent={openAgent}
+        onOpenAgent={() => void openAgent()}
         onDismissNotice={() => setAgentNotice(null)}
         onDisconnectAgent={() => setAgentDisconnectOpen(true)}
       />

@@ -31,6 +31,9 @@ let lastHeartbeatAt = null;
 let hiddenToTrayNoticeShown = false;
 let wakeOnDemandMode = false;
 let quitAfterWakeTimer = null;
+let backgroundStarted = false;
+let pendingShowMainWindow = false;
+const pendingProtocolUrls = [];
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -133,6 +136,45 @@ function sendState(extra = {}) {
     ...extra,
   });
   updateTrayMenu();
+}
+
+function extractProtocolUrl(argv) {
+  return argv.find((arg) => arg.startsWith("flowpost-agent://")) ?? null;
+}
+
+function parseProtocolAction(url) {
+  if (!url?.startsWith("flowpost-agent://")) return null;
+
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (error) {
+    logLifecycle("protocol:invalid", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+
+  return {
+    type: parsed.hostname || parsed.pathname.replace(/^\//, ""),
+    code: parsed.searchParams.get("code"),
+    platform: parsed.searchParams.get("platform"),
+    url,
+  };
+}
+
+function detectStartupMode(argv) {
+  if (argv.some((arg) => arg.includes("flowpost-agent://wake"))) {
+    return "wake";
+  }
+
+  if (argv.some((arg) => arg.includes("flowpost-agent://open-background"))) {
+    return "background";
+  }
+
+  if (argv.includes("--hidden")) return "hidden";
+  if (argv.includes("--background")) return "background";
+  return "normal";
 }
 
 async function api(pathname, options = {}) {
@@ -433,6 +475,33 @@ function startPolling() {
   logLifecycle("polling:started");
 }
 
+async function startBackgroundAgent() {
+  if (!app.isReady()) {
+    logLifecycle("background:start-deferred-before-ready");
+    return;
+  }
+
+  if (!runner) {
+    runner = createAutomationRunner({ app, sendState, logJob });
+  }
+
+  await readSettings();
+  createTray();
+
+  if (settings.agentToken) {
+    startPolling();
+  } else {
+    sendState({ status: "not_paired" });
+  }
+
+  if (!backgroundStarted) {
+    backgroundStarted = true;
+    logLifecycle("background_agent_started");
+  } else {
+    logLifecycle("background_agent_already_started");
+  }
+}
+
 function createTrayIcon() {
   return nativeImage.createFromDataURL(
     "data:image/svg+xml;utf8," +
@@ -510,6 +579,12 @@ function createTray() {
 }
 
 function showMainWindow() {
+  if (!app.isReady()) {
+    pendingShowMainWindow = true;
+    logLifecycle("show-window:deferred-before-ready");
+    return;
+  }
+
   if (!mainWindow || mainWindow.isDestroyed()) {
     createWindow({ show: true });
     return;
@@ -520,16 +595,13 @@ function showMainWindow() {
   mainWindow.focus();
 }
 
-function ensureMainWindow({ show = false } = {}) {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    createWindow({ show });
+function createWindow({ show = true } = {}) {
+  if (!app.isReady()) {
+    pendingShowMainWindow = pendingShowMainWindow || show;
+    logLifecycle("create-window:blocked-before-ready", { show });
     return;
   }
 
-  if (show) showMainWindow();
-}
-
-function createWindow({ show = true } = {}) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     if (show) showMainWindow();
     return;
@@ -569,6 +641,9 @@ function createWindow({ show = true } = {}) {
   mainWindow.on("closed", () => {
     logLifecycle("main-window:destroyed");
     mainWindow = null;
+  });
+  mainWindow.webContents.once("did-finish-load", () => {
+    sendState();
   });
   mainWindow.loadFile(path.join(__dirname, "renderer.html"));
 }
@@ -630,90 +705,89 @@ function registerProtocol() {
   }
 }
 
+function queueProtocolUrl(url) {
+  if (!url?.startsWith("flowpost-agent://")) return null;
+
+  if (!app.isReady()) {
+    pendingProtocolUrls.push(url);
+    logLifecycle("protocol:queued-before-ready", { url });
+    return parseProtocolAction(url)?.type ?? null;
+  }
+
+  void handleProtocolUrlAfterReady(url);
+  return parseProtocolAction(url)?.type ?? null;
+}
+
 function handleProtocolUrl(url) {
-  if (!url?.startsWith("flowpost-agent://")) return;
+  return queueProtocolUrl(url);
+}
 
-  logLifecycle("protocol:received", { url });
-  let parsed;
-  try {
-    parsed = new URL(url);
-  } catch (error) {
-    logLifecycle("protocol:invalid", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return;
+async function handleProtocolUrlAfterReady(url) {
+  if (!app.isReady()) {
+    queueProtocolUrl(url);
+    return null;
   }
 
-  const action = parsed.hostname || parsed.pathname.replace(/^\//, "");
-  const code = parsed.searchParams.get("code");
-  const shouldShowWindow = action === "open" || action === "pair";
+  const action = parseProtocolAction(url);
+  if (!action) return null;
 
-  if (action === "wake" || action === "open-background") {
+  logLifecycle("protocol:received", { url, action: action.type });
+
+  if (action.type === "wake" || action.type === "open-background") {
     wakeOnDemandMode = true;
-    logLifecycle("wake mode enabled", { action });
-  }
+    logLifecycle("wake mode enabled", { action: action.type });
+    await startBackgroundAgent();
+  } else if (action.type === "open") {
+    await startBackgroundAgent();
+    showMainWindow();
+  } else if (action.type === "pair") {
+    if (action.code) {
+      pendingPairingCode = action.code;
+    }
 
-  if (action === "pair" && code) {
-    pendingPairingCode = code;
-  }
-
-  if (shouldShowWindow) {
+    await startBackgroundAgent();
     showMainWindow();
   } else {
-    ensureMainWindow({ show: false });
-    if (settings.agentToken) startPolling();
+    await startBackgroundAgent();
   }
 
   sendState({
     status: "protocol_opened",
-    protocolAction: action,
+    protocolAction: action.type,
     pairingCode: pendingPairingCode,
-    protocolPlatform: parsed.searchParams.get("platform"),
+    protocolPlatform: action.platform,
   });
 
-  return action;
+  return action.type;
 }
 
-function handleProtocolArgv(argv) {
-  const protocolArg = argv.find((arg) => arg.startsWith("flowpost-agent://"));
-  if (protocolArg) return handleProtocolUrl(protocolArg);
-  return null;
+async function flushPendingProtocolUrls() {
+  while (pendingProtocolUrls.length > 0) {
+    const url = pendingProtocolUrls.shift();
+    await handleProtocolUrlAfterReady(url);
+  }
 }
 
 function shouldStartHidden(argv) {
-  if (argv.includes("--background") || argv.includes("--hidden")) return true;
-
-  const protocolArg = argv.find((arg) => arg.startsWith("flowpost-agent://"));
-  if (!protocolArg) return false;
-
-  try {
-    const parsed = new URL(protocolArg);
-    const action = parsed.hostname || parsed.pathname.replace(/^\//, "");
-    return action === "wake" || action === "open-background";
-  } catch {
-    return false;
-  }
+  return ["wake", "background", "hidden"].includes(detectStartupMode(argv));
 }
 
 function initializeWakeModeFromArgv(argv) {
-  if (argv.includes("--background") || argv.includes("--hidden")) {
+  const startupMode = detectStartupMode(argv);
+
+  if (startupMode === "background" || startupMode === "hidden") {
     wakeOnDemandMode = true;
-    logLifecycle("wake mode enabled", { source: "argv" });
+    logLifecycle("wake mode enabled", { source: "argv", startupMode });
     return;
   }
 
-  const protocolArg = argv.find((arg) => arg.startsWith("flowpost-agent://"));
+  const protocolArg = extractProtocolUrl(argv);
   if (!protocolArg) return;
 
-  try {
-    const parsed = new URL(protocolArg);
-    const action = parsed.hostname || parsed.pathname.replace(/^\//, "");
-    if (action === "wake" || action === "open-background") {
-      wakeOnDemandMode = true;
-      logLifecycle("wake mode enabled", { action });
-    }
-  } catch {
-    // Ignore malformed protocol args here; handleProtocolArgv logs them later.
+  const action = parseProtocolAction(protocolArg);
+  if (action?.type === "wake" || action?.type === "open-background") {
+    wakeOnDemandMode = true;
+    logLifecycle("wake mode enabled", { action: action.type });
   }
 }
 
@@ -809,8 +883,18 @@ ipcMain.handle("agent:open-profiles", async () => {
 
 app.on("second-instance", (_event, argv) => {
   logLifecycle("single-instance:second-instance", { argv });
-  const action = handleProtocolArgv(argv);
-  if (!action) showMainWindow();
+  const protocolUrl = extractProtocolUrl(argv);
+
+  if (protocolUrl) {
+    queueProtocolUrl(protocolUrl);
+    return;
+  }
+
+  if (app.isReady()) {
+    showMainWindow();
+  } else {
+    pendingShowMainWindow = true;
+  }
 });
 
 app.on("open-url", (event, url) => {
@@ -823,16 +907,29 @@ app.whenReady().then(async () => {
   runner = createAutomationRunner({ app, sendState, logJob });
   await readSettings();
   setAutoLaunch(settings.autoLaunch === true);
-  createTray();
   initializeWakeModeFromArgv(process.argv);
-  createWindow({ show: !shouldStartHidden(process.argv) });
-  handleProtocolArgv(process.argv);
-  mainWindow.webContents.once("did-finish-load", () => {
-    sendState();
-    if (settings.agentToken) startPolling();
-  });
+  await startBackgroundAgent();
+
+  const startupMode = detectStartupMode(process.argv);
+  const startupProtocolUrl = extractProtocolUrl(process.argv);
+
+  if (startupProtocolUrl && !pendingProtocolUrls.includes(startupProtocolUrl)) {
+    pendingProtocolUrls.push(startupProtocolUrl);
+  }
+
+  if (
+    pendingShowMainWindow ||
+    (startupMode === "normal" &&
+      !startupProtocolUrl &&
+      pendingProtocolUrls.length === 0)
+  ) {
+    showMainWindow();
+  }
+
+  await flushPendingProtocolUrls();
   logLifecycle("app:started", {
     background: shouldStartHidden(process.argv),
+    startupMode,
   });
 });
 
