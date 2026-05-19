@@ -62,6 +62,7 @@ export type DistributionAssetListItem = {
   platformSlug: string;
   variantStatus: VariantStatus;
   publicationStatus: PublicationStatus;
+  publicationLastError: string | null;
   scheduledAt: string | null;
   publishedAt: string | null;
   externalUrl: string | null;

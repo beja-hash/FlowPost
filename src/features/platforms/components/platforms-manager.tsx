@@ -255,7 +255,9 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
     const readyAgent = await ensureAgentReady();
 
     if (readyAgent.state === "busy") {
-      toast.info("Agent уже выполняет задачу. Дождитесь завершения.");
+      toast.info(
+        "FlowPost Agent занят. Agent уже выполняет задачу. Дождитесь завершения или обновите статус.",
+      );
       return;
     }
 
@@ -307,7 +309,10 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
 
       if (body.status === "busy") {
         setAgentConnect(body.job ? { job: body.job } : null);
-        toast.info(body.message ?? "Agent уже выполняет задачу. Дождитесь завершения.");
+        toast.info(
+          body.message ??
+            "FlowPost Agent занят. Agent уже выполняет задачу. Дождитесь завершения или обновите статус.",
+        );
         return;
       }
 
@@ -328,7 +333,9 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
     const readyAgent = await ensureAgentReady();
 
     if (readyAgent.state === "busy") {
-      toast.info("Agent уже выполняет задачу. Дождитесь завершения.");
+      toast.info(
+        "FlowPost Agent занят. Agent уже выполняет задачу. Дождитесь завершения или обновите статус.",
+      );
       return;
     }
 
@@ -378,7 +385,10 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
 
       if (body.status === "busy") {
         setAgentConnect(body.job ? { job: body.job } : null);
-        toast.info(body.message ?? "Agent уже выполняет задачу. Дождитесь завершения.");
+        toast.info(
+          body.message ??
+            "FlowPost Agent занят. Agent уже выполняет задачу. Дождитесь завершения или обновите статус.",
+        );
         return;
       }
 
@@ -766,7 +776,7 @@ function AgentStatePanel({
           </span>
         </div>
         <p className="text-muted-foreground mt-2 text-sm">
-          Agent уже выполняет задачу. Дождитесь завершения перед новым запуском.
+          Agent уже выполняет задачу. Дождитесь завершения или обновите статус. Новая задача запустится после текущей, если она уже поставлена в очередь.
         </p>
       </div>
     );

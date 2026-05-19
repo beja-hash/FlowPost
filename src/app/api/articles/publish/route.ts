@@ -65,13 +65,19 @@ export async function POST(request: NextRequest) {
     }
 
     const payload = publishSchema.parse(await request.json());
+    console.log("[api/articles/publish] request received", {
+      userId: session.user.id,
+      articleId: payload.articleId,
+    });
     const result = await createPublishArticleJob({
       userId: session.user.id,
       articleId: payload.articleId,
     });
 
     return NextResponse.json({
+      ok: true,
       mode: "desktop_agent",
+      jobId: result.job?.id ?? null,
       ...result,
     });
   } catch (error) {

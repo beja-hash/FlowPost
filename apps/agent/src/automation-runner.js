@@ -11,6 +11,14 @@ class UserCancelledBrowserError extends Error {
   }
 }
 
+class SessionExpiredError extends Error {
+  constructor(message = "Сессия площадки истекла. Нажмите «Переподключить», чтобы войти заново.") {
+    super(message);
+    this.name = "SessionExpiredError";
+    this.code = "SESSION_EXPIRED";
+  }
+}
+
 function normalizePlatform(platform) {
   const normalized = String(platform || "default")
     .trim()
@@ -258,6 +266,11 @@ function createAutomationRunner({ app, sendState, logJob }) {
     logRunner("context:launch:start", {
       platform: normalizedPlatform,
       userDataDir,
+      headless,
+    });
+    console.log("[agent] browser launch mode", {
+      platform: normalizedPlatform,
+      headless,
     });
 
     launchPromise = chromium
@@ -419,9 +432,13 @@ function createAutomationRunner({ app, sendState, logJob }) {
 
   async function runPublishArticleJob(job, updateJobStatus) {
     const platform = normalizePlatform(job.platform || job.payload?.platform);
-    const editorUrl = job.payload?.editorUrl;
+    const editorUrl = job.payload?.platformEditorUrl || job.payload?.editorUrl;
     const title = job.payload?.title;
-    const body = [job.payload?.body, job.payload?.ctaText, job.payload?.ctaUrl]
+    const body = [
+      job.payload?.content || job.payload?.body,
+      job.payload?.ctaText,
+      job.payload?.ctaUrl,
+    ]
       .filter(Boolean)
       .join("\n\n");
 
@@ -431,11 +448,29 @@ function createAutomationRunner({ app, sendState, logJob }) {
 
     await updateJobStatus(job.id, "running");
     setBrowserState("running_job", { status: "publishing" });
+    console.log("[agent] publish started", {
+      id: job.id,
+      platform,
+      payloadKeys:
+        job.payload && typeof job.payload === "object"
+          ? Object.keys(job.payload)
+          : [],
+    });
+    await logJob(job.id, "Публикация запущена в локальном браузере Agent.");
 
     const { page } = await openPage(platform, editorUrl, { headless: true });
 
     try {
+      if (await looksLikeLoginPage(page)) {
+        throw new SessionExpiredError();
+      }
+
       await fillArticle(page, platform, title, body);
+      await clickPublish(page, platform);
+
+      if (await looksLikeLoginPage(page)) {
+        throw new SessionExpiredError();
+      }
 
       await updateJobStatus(job.id, "completed", {
         result: {
@@ -445,10 +480,113 @@ function createAutomationRunner({ app, sendState, logJob }) {
         },
       });
       await logJob(job.id, "Публикация выполнена локально через Playwright.");
+      console.log("[agent] publish completed", {
+        id: job.id,
+        platform,
+        publishedUrl: page.url(),
+      });
       setBrowserState("idle", { status: "publish_completed" });
+    } catch (error) {
+      if (error instanceof SessionExpiredError) {
+        console.log("[agent] session expired", {
+          id: job.id,
+          platform,
+          url: page.url(),
+        });
+        await updateJobStatus(job.id, "failed", {
+          error: error.message,
+          result: {
+            ok: false,
+            code: error.code,
+            platform,
+            articleId: job.payload?.articleId,
+          },
+        });
+        await logJob(job.id, error.message, "warning");
+        setBrowserState("idle", { status: "session_expired" });
+        throw error;
+      }
+
+      const message =
+        error instanceof Error ? error.message : "Ошибка автоматизации публикации.";
+      console.log("[agent] publish failed", {
+        id: job.id,
+        platform,
+        error: message,
+      });
+      await updateJobStatus(job.id, "failed", {
+        error: message,
+        result: {
+          ok: false,
+          code: "AUTOMATION_EXCEPTION",
+          platform,
+          articleId: job.payload?.articleId,
+        },
+      }).catch(() => undefined);
+      await logJob(job.id, message, "error");
+      throw error;
     } finally {
       await closeActiveContext();
     }
+  }
+
+  async function looksLikeLoginPage(page) {
+    const url = page.url().toLowerCase();
+
+    if (
+      url.includes("login") ||
+      url.includes("auth") ||
+      url.includes("passport") ||
+      url.includes("oauth") ||
+      url.includes("signin")
+    ) {
+      return true;
+    }
+
+    const loginElements = page
+      .locator(
+        [
+          'input[type="password"]',
+          'button:has-text("Войти")',
+          'a:has-text("Войти")',
+          'button:has-text("Log in")',
+          'button:has-text("Sign in")',
+        ].join(", "),
+      )
+      .first();
+
+    return loginElements.isVisible({ timeout: 1500 }).catch(() => false);
+  }
+
+  async function clickPublish(page, platform) {
+    const selectors =
+      platform === "dzen"
+        ? [
+            'button:has-text("Опубликовать")',
+            'button:has-text("Публикация")',
+            'button:has-text("Далее")',
+            '[role="button"]:has-text("Опубликовать")',
+          ]
+        : [
+            'button:has-text("Опубликовать")',
+            'button:has-text("Publish")',
+            '[role="button"]:has-text("Опубликовать")',
+            '[role="button"]:has-text("Publish")',
+          ];
+
+    for (const selector of selectors) {
+      const button = page.locator(selector).first();
+      if (await button.isVisible({ timeout: 2000 }).catch(() => false)) {
+        await button.click({ timeout: 10_000 });
+        await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+        await page.waitForTimeout(3000);
+        return;
+      }
+    }
+
+    throw new Error(
+      "Не удалось найти кнопку публикации. Проверьте, что сессия площадки активна и редактор открылся.",
+    );
   }
 
   async function fillArticle(page, platform, title, body) {

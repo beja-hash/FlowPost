@@ -185,14 +185,14 @@ function statusLabel(status: string) {
     BRIEF_GENERATED: "Бриф создан",
     ARTICLE_GENERATED: "Статья создана",
     SCHEDULED: "Ожидает публикации",
-    WAITING_AGENT: "Ждёт компьютер клиента",
+    WAITING_AGENT: "Ожидает FlowPost Agent",
     MISSED: "Пропущено, требуется действие",
-    CATCHUP_PENDING: "Опубликуется при следующем запуске",
-    PUBLISHING: "Публикуется",
+    CATCHUP_PENDING: "Agent занят, публикация в очереди",
+    PUBLISHING: "Публикуется через FlowPost Agent",
     PUBLISHED: "Опубликовано",
     FAILED: "Ошибка",
     SKIPPED: "Пропущено",
-    WAITING_CONNECTION: "Требуется подключить браузер",
+    WAITING_CONNECTION: "Сессия площадки истекла",
   };
 
   return labels[status] ?? status;

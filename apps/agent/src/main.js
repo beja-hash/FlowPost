@@ -219,11 +219,21 @@ function prewarmBrowser() {
 
 async function runConnectPlatformJob(job) {
   logLifecycle("job:connect-platform:start", { jobId: job.id });
+  console.log("[agent] job running", {
+    id: job.id,
+    type: job.type,
+    platform: job.platform,
+  });
   await runner.runConnectPlatformJob(job, updateJobStatus);
 }
 
 async function runPublishArticleJob(job) {
   logLifecycle("job:publish-article:start", { jobId: job.id });
+  console.log("[agent] job running", {
+    id: job.id,
+    type: job.type,
+    platform: job.platform,
+  });
   await runner.runPublishArticleJob(job, updateJobStatus);
 }
 
@@ -241,6 +251,11 @@ async function handleJob(job) {
   await updateJobStatus(job.id, "failed", {
     error: "Этот тип задачи пока не поддерживается в Agent.",
   });
+  console.log("[agent] unknown job type", {
+    id: job.id,
+    type: job.type,
+    platform: job.platform,
+  });
 }
 
 async function pollJobs() {
@@ -256,9 +271,23 @@ async function pollJobs() {
     const { job } = await api("/api/agent/jobs/next");
     if (!job) return;
     activeJobId = job.id;
+    console.log("[agent] job received", {
+      id: job.id,
+      type: job.type,
+      platform: job.platform,
+      payloadKeys:
+        job.payload && typeof job.payload === "object"
+          ? Object.keys(job.payload)
+          : [],
+    });
     sendState({ status: "job_received" });
     try {
       await handleJob(job);
+      console.log("[agent] job completed", {
+        id: job.id,
+        type: job.type,
+        platform: job.platform,
+      });
     } catch (error) {
       const message = userSafeErrorMessage(error, "Неизвестная ошибка Agent.");
       const status = runner?.isUserCancelledError?.(error)
@@ -268,6 +297,12 @@ async function pollJobs() {
         () => undefined,
       );
       await logJob(job.id, message, "error");
+      console.log("[agent] job failed", {
+        id: job.id,
+        type: job.type,
+        platform: job.platform,
+        error: message,
+      });
       throw error;
     }
   } catch (error) {
@@ -287,6 +322,7 @@ function startPolling() {
   startHeartbeat();
   void prewarmBrowser();
   void pollJobs();
+  console.log("[agent] polling started");
   logLifecycle("polling:started");
 }
 

@@ -193,7 +193,10 @@ export function DistributionManager({
             "Подключите FlowPost Agent, чтобы открыть браузер на вашем компьютере.",
         );
       } else if (body.status === "busy") {
-        toast.info(body.message ?? "Agent уже выполняет задачу. Дождитесь завершения.");
+        toast.info(
+          body.message ??
+            "FlowPost Agent занят. Agent уже выполняет задачу. Новая задача запустится после завершения текущей.",
+        );
       } else if (endpoint === "/api/articles/publish" && body.job) {
         toast.success("Публикация отправлена в FlowPost Agent. Браузер не будет показываться.");
       } else {
@@ -353,6 +356,12 @@ export function DistributionManager({
                         <p className="mt-3 text-sm text-muted-foreground">
                           {selectedAsset.brandName} · {selectedAsset.brandDomain}
                         </p>
+                        {selectedAsset.publicationStatus === "FAILED" &&
+                        selectedAsset.publicationLastError ? (
+                          <p className="text-destructive mt-3 max-w-3xl text-sm">
+                            {selectedAsset.publicationLastError}
+                          </p>
+                        ) : null}
                       </div>
 
                       <div className="grid shrink-0 gap-3 rounded-[1.2rem] border border-border/25 bg-card/55 px-4 py-3 sm:grid-cols-2 lg:grid-cols-1">

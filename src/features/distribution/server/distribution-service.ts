@@ -102,6 +102,7 @@ type SafePublicationRecord = Prisma.PublicationGetPayload<{
     externalUrl: true;
     clickCount: true;
     leadCount: true;
+    lastError: true;
     createdAt: true;
   };
 }>;
@@ -192,6 +193,7 @@ function mapAsset(record: AssetRecord): DistributionAssetListItem {
     platformSlug: variant.platform.slug,
     variantStatus: variant.status,
     publicationStatus: publication?.status ?? PublicationStatus.PLANNED,
+    publicationLastError: publication?.lastError ?? null,
     scheduledAt: publication?.scheduledAt?.toISOString() ?? null,
     publishedAt: publication?.publishedAt?.toISOString() ?? null,
     externalUrl: publication?.externalUrl ?? null,
@@ -228,6 +230,7 @@ function mapSafeAsset(
     platformSlug: variant.platform.slug,
     variantStatus: variant.status,
     publicationStatus: publication?.status ?? PublicationStatus.PLANNED,
+    publicationLastError: publication?.lastError ?? null,
     scheduledAt: publication?.scheduledAt?.toISOString() ?? null,
     publishedAt: publication?.publishedAt?.toISOString() ?? null,
     externalUrl: publication?.externalUrl ?? null,
@@ -532,6 +535,7 @@ export async function listDistributionAssetsByUser(userId: string) {
         externalUrl: true,
         clickCount: true,
         leadCount: true,
+        lastError: true,
         createdAt: true,
       },
       orderBy: {

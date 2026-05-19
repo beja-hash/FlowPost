@@ -19,7 +19,6 @@ import {
 } from "@/services/article-generation-workflow";
 import { prisma } from "@/infrastructure/db/prisma";
 import { getPlatformConfig } from "@/infrastructure/platforms/platform-registry";
-import { SessionManager } from "@/infrastructure/platforms/session-manager";
 import { ensureUserWorkspace } from "@/features/workspaces/server/workspace-service";
 import { generateText } from "@/lib/llm";
 import { normalizeHttpUrl } from "@/lib/url";
@@ -120,11 +119,49 @@ function hoursSince(date: Date, now = new Date()) {
   return (now.getTime() - date.getTime()) / 3_600_000;
 }
 
-async function publishArticleWithBrowserSession(userId: string, articleId: string) {
+async function publishArticleWithBrowserSession(
+  userId: string,
+  articleId: string,
+  strategyTaskId?: string,
+) {
   const { createPublishArticleJob } = await import(
     "@/features/agent/server/agent-service"
   );
-  return createPublishArticleJob({ userId, articleId });
+  return createPublishArticleJob({
+    userId,
+    articleId,
+    allowOfflineQueue: true,
+    strategyTaskId,
+  });
+}
+
+function strategyStatusForPublishJob(result: {
+  status: string;
+  agentState?: string;
+  message?: string;
+}) {
+  if (result.status === "requires_agent" || result.agentState === "paired_offline") {
+    return {
+      status: StrategyArticleTaskStatus.WAITING_AGENT,
+      error:
+        result.message ??
+        "Agent не запущен. Задача будет выполнена, когда Agent снова станет активен.",
+    };
+  }
+
+  if (result.status === "busy" || result.agentState === "busy") {
+    return {
+      status: StrategyArticleTaskStatus.CATCHUP_PENDING,
+      error:
+        result.message ??
+        "Agent занят другой задачей. Публикация поставлена в очередь.",
+    };
+  }
+
+  return {
+    status: StrategyArticleTaskStatus.PUBLISHING,
+    error: "Публикуется через FlowPost Agent.",
+  };
 }
 
 function normalizeOptional(value?: string | null) {
@@ -1077,7 +1114,7 @@ async function isPlatformReadyForClientAgent(userId: string, platform: string) {
     return false;
   }
 
-  return SessionManager.load(userId, platformConfig.id);
+  return true;
 }
 
 export async function markDueTasksAsWaitingAgent(userId?: string) {
@@ -1385,16 +1422,21 @@ export async function runCatchUpPublishingForTask(
   const nextAttempts = task.attempts + 1;
 
   try {
-    const result = await publishArticleWithBrowserSession(userId, task.articleId);
+    const result = await publishArticleWithBrowserSession(
+      userId,
+      task.articleId,
+      task.id,
+    );
+    const nextState = strategyStatusForPublishJob(result);
     await prisma.strategyArticleTask.update({
       where: { id: task.id },
       data: {
-        status: StrategyArticleTaskStatus.PUBLISHED,
-        error: null,
+        status: nextState.status,
+        error: nextState.error,
       },
     });
 
-    devLog("agent:publish:done", {
+    devLog("agent:publish:queued", {
       taskId: task.id,
       articleId: task.articleId,
       platform: task.platform,
@@ -1402,13 +1444,29 @@ export async function runCatchUpPublishingForTask(
       now,
       agentOnline: true,
       oldStatus: task.status,
-      newStatus: StrategyArticleTaskStatus.PUBLISHED,
+      newStatus: nextState.status,
       attempts: nextAttempts,
       publishResult: result,
     });
 
-    return { ...result, taskId: task.id, status: StrategyArticleTaskStatus.PUBLISHED };
+    return { ...result, taskId: task.id, status: nextState.status };
   } catch (error) {
+    const errorCode =
+      error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code)
+        : null;
+    if (errorCode === "PLATFORM_NOT_CONNECTED") {
+      await prisma.strategyArticleTask.update({
+        where: { id: task.id },
+        data: {
+          status: StrategyArticleTaskStatus.WAITING_CONNECTION,
+          error: CONNECTION_REQUIRED_MESSAGE,
+        },
+      });
+
+      throw error;
+    }
+
     const nextStatus =
       nextAttempts >= MAX_PUBLISH_ATTEMPTS
         ? StrategyArticleTaskStatus.FAILED
@@ -1493,14 +1551,15 @@ export async function runStrategyPublisher() {
     }
 
     try {
+      const result = await publishArticleWithBrowserSession(
+        task.strategy.userId,
+        task.articleId,
+        task.id,
+      );
+      const nextState = strategyStatusForPublishJob(result);
       await prisma.strategyArticleTask.update({
         where: { id: task.id },
-        data: { status: StrategyArticleTaskStatus.PUBLISHING, error: null },
-      });
-      await publishArticleWithBrowserSession(task.strategy.userId, task.articleId);
-      await prisma.strategyArticleTask.update({
-        where: { id: task.id },
-        data: { status: StrategyArticleTaskStatus.PUBLISHED, error: null },
+        data: { status: nextState.status, error: nextState.error },
       });
       published += 1;
     } catch (error) {

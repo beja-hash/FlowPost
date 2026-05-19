@@ -641,7 +641,8 @@ export function ArticleEditorPage({
 
         if (body.status === "busy") {
           toast.info(
-            body.message ?? "Agent уже выполняет задачу. Дождитесь завершения.",
+            body.message ??
+              "FlowPost Agent занят. Agent уже выполняет задачу. Новая задача запустится после завершения текущей.",
           );
           return;
         }
@@ -712,6 +713,12 @@ export function ArticleEditorPage({
                 </StatusBadge>
                 <span>{form.canonicalBody.trim().length} символов</span>
               </div>
+              {form.publicationStatus === PublicationStatus.FAILED &&
+              currentAsset?.publicationLastError ? (
+                <p className="text-destructive mt-2 text-sm">
+                  {currentAsset.publicationLastError}
+                </p>
+              ) : null}
             </div>
           </div>
 

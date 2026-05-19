@@ -7,6 +7,7 @@ import {
   AgentJobType,
   PlatformAccountStatus,
   PublicationStatus,
+  StrategyArticleTaskStatus,
   VariantStatus,
   type AgentDevice,
   type AgentJob,
@@ -66,6 +67,49 @@ export function publicAgentJob(job: AgentJob) {
     createdAt: job.createdAt.toISOString(),
     updatedAt: job.updatedAt.toISOString(),
   };
+}
+
+function publishBusyMessage() {
+  return "FlowPost Agent занят. Agent уже выполняет задачу. Новая публикация поставлена в очередь и запустится после завершения текущей.";
+}
+
+function connectBusyMessage() {
+  return "FlowPost Agent занят. Agent уже выполняет задачу. Дождитесь завершения или обновите статус.";
+}
+
+function payloadKeys(payload: unknown) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return [];
+  }
+
+  return Object.keys(payload);
+}
+
+function jobErrorCode(job: Pick<AgentJob, "result" | "error">) {
+  const result =
+    job.result && typeof job.result === "object" && !Array.isArray(job.result)
+      ? (job.result as Record<string, unknown>)
+      : {};
+  const explicitCode =
+    typeof result.code === "string"
+      ? result.code
+      : typeof result.errorCode === "string"
+        ? result.errorCode
+        : null;
+  const message = `${explicitCode ?? ""} ${job.error ?? ""}`.toUpperCase();
+
+  if (
+    explicitCode === "SESSION_EXPIRED" ||
+    explicitCode === "NEED_RECONNECT" ||
+    explicitCode === "WAITING_USER_LOGIN" ||
+    message.includes("SESSION_EXPIRED") ||
+    message.includes("NEED_RECONNECT") ||
+    message.includes("WAITING_USER_LOGIN")
+  ) {
+    return "SESSION_EXPIRED";
+  }
+
+  return explicitCode;
 }
 
 export function publicAgentDevice(device: AgentDevice) {
@@ -442,7 +486,7 @@ export async function createConnectPlatformJob({
   if (agent.state === "busy") {
     return {
       status: "busy" as const,
-      message: "Agent уже выполняет задачу. Дождитесь завершения.",
+      message: connectBusyMessage(),
       agentState: agent.state,
       agentDevice: publicAgentDevice(activeDevice),
       job: agent.busyJob,
@@ -471,7 +515,7 @@ export async function createConnectPlatformJob({
   if (existingJob) {
     return {
       status: "busy" as const,
-      message: "Браузер уже запускается или Agent выполняет задачу.",
+      message: connectBusyMessage(),
       agentState: "busy" as const,
       agentDevice: publicAgentDevice(activeDevice),
       job: publicAgentJob(existingJob),
@@ -516,11 +560,20 @@ export async function createPublishArticleJob({
   userId,
   articleId,
   allowOfflineQueue = false,
+  strategyTaskId,
 }: {
   userId: string;
   articleId: string;
   allowOfflineQueue?: boolean;
+  strategyTaskId?: string;
 }) {
+  console.log("[agent-service] publish-request:received", {
+    userId,
+    articleId,
+    allowOfflineQueue,
+    strategyTaskId: strategyTaskId ?? null,
+  });
+
   const article = await prisma.articleAsset.findFirst({
     where: {
       id: articleId,
@@ -544,6 +597,11 @@ export async function createPublishArticleJob({
         take: 1,
         orderBy: {
           createdAt: "desc",
+        },
+      },
+      workspace: {
+        select: {
+          id: true,
         },
       },
     },
@@ -580,6 +638,13 @@ export async function createPublishArticleJob({
   });
 
   if (account?.status !== PlatformAccountStatus.CONNECTED) {
+    console.log("[agent-service] publish-job:platform-not-connected", {
+      userId,
+      articleId,
+      platform: config.slug,
+      accountStatus: account?.status ?? null,
+    });
+
     throw new AgentServiceError(
       409,
       "PLATFORM_NOT_CONNECTED",
@@ -592,6 +657,15 @@ export async function createPublishArticleJob({
     agent.state === "active" || agent.state === "busy"
       ? await getActiveAgentDevice(userId)
       : null;
+
+  console.log("[agent-service] publish-job:active-agent", {
+    userId,
+    articleId,
+    platform: config.slug,
+    agentState: agent.state,
+    activeDeviceId: activeDevice?.id ?? null,
+    busyJobId: agent.busyJob?.id ?? null,
+  });
 
   if (!activeDevice && (agent.state === "none" || !allowOfflineQueue)) {
     console.log("[agent-service] publish-job:requires-agent", {
@@ -613,20 +687,11 @@ export async function createPublishArticleJob({
     };
   }
 
-  if (activeDevice && agent.state === "busy") {
-    return {
-      status: "busy" as const,
-      message: "Agent уже выполняет задачу. Дождитесь завершения.",
-      agentState: agent.state,
-      agentDevice: publicAgentDevice(activeDevice),
-      job: agent.busyJob,
-    };
-  }
-
   const existingJob = await prisma.agentJob.findFirst({
     where: {
       userId,
       type: AgentJobType.PUBLISH_ARTICLE,
+      platform: config.slug,
       status: {
         in: [
           AgentJobStatus.QUEUED,
@@ -646,16 +711,46 @@ export async function createPublishArticleJob({
   });
 
   if (existingJob) {
+    console.log("[agent-service] existing-publish-job:found", {
+      userId,
+      articleId,
+      platform: config.slug,
+      jobId: existingJob.id,
+      status: existingJob.status,
+    });
+
     return {
-      status: "busy" as const,
+      status:
+        existingJob.status === AgentJobStatus.QUEUED
+          ? ("queued" as const)
+          : ("busy" as const),
       message: "Публикация уже отправлена в Agent.",
       agentState: "busy" as const,
       agentDevice: activeDevice ? publicAgentDevice(activeDevice) : null,
       job: publicAgentJob(existingJob),
+      existing: true,
     };
   }
 
   const body = formatArticleForPlatform(article.canonicalBody, config.slug);
+  const publishPayload = {
+    articleId: article.id,
+    publicationId: publication.id,
+    variantId: variant.id,
+    brandId: article.brandId,
+    workspaceId: article.workspace.id,
+    userId,
+    strategyTaskId: strategyTaskId ?? null,
+    platform: config.slug,
+    platformName: config.name,
+    platformEditorUrl: config.editorUrl,
+    editorUrl: config.editorUrl,
+    title: article.title,
+    content: body,
+    body,
+    ctaText: article.ctaText,
+    ctaUrl: article.ctaUrl,
+  };
   const job = await prisma.$transaction(async (tx) => {
     await tx.articleAsset.update({
       where: { id: article.id },
@@ -682,16 +777,7 @@ export async function createPublishArticleJob({
         agentDeviceId: activeDevice?.id,
         type: AgentJobType.PUBLISH_ARTICLE,
         platform: config.slug,
-        payload: {
-          articleId: article.id,
-          platform: config.slug,
-          platformName: config.name,
-          editorUrl: config.editorUrl,
-          title: article.title,
-          body,
-          ctaText: article.ctaText,
-          ctaUrl: article.ctaUrl,
-        },
+        payload: publishPayload,
         status: AgentJobStatus.QUEUED,
       },
     });
@@ -704,12 +790,23 @@ export async function createPublishArticleJob({
     jobId: job.id,
     type: job.type,
     platform: config.slug,
+    payloadKeys: payloadKeys(job.payload),
+  });
+  console.log("[agent-service] publication-status:updated", {
+    userId,
+    articleId,
+    publicationId: publication.id,
+    status: PublicationStatus.SCHEDULED,
+    assetStatus: AssetStatus.DISTRIBUTING,
+    reason: "publish_job_created",
   });
 
   return {
     status: "queued" as const,
     message:
-      "Задание публикации создано. FlowPost Agent откроет браузер на вашем компьютере.",
+      agent.state === "busy"
+        ? publishBusyMessage()
+        : "Задание публикации создано. FlowPost Agent выполнит публикацию в фоне.",
     agentState: agent.state,
     agentDevice: activeDevice ? publicAgentDevice(activeDevice) : null,
     job: publicAgentJob(job),
@@ -719,6 +816,11 @@ export async function createPublishArticleJob({
 export async function getNextAgentJob(authorization: string | null) {
   const device = await authenticateAgent(authorization);
   await cleanupStaleAgentJobs(device.userId);
+
+  console.log("[agent-service] jobs-next:request", {
+    userId: device.userId,
+    deviceId: device.id,
+  });
 
   const job = await prisma.agentJob.findFirst({
     where: {
@@ -732,6 +834,13 @@ export async function getNextAgentJob(authorization: string | null) {
   });
 
   if (!job) {
+    console.log("[agent-service] jobs-next:request", {
+      userId: device.userId,
+      deviceId: device.id,
+      foundJobId: null,
+      jobType: null,
+      platform: null,
+    });
     return null;
   }
 
@@ -744,6 +853,15 @@ export async function getNextAgentJob(authorization: string | null) {
       status: AgentJobStatus.PICKED_UP,
       startedAt: new Date(),
     },
+  });
+
+  console.log("[agent-service] job:picked_up", {
+    userId: device.userId,
+    deviceId: device.id,
+    foundJobId: claimedJob.id,
+    jobType: claimedJob.type,
+    platform: claimedJob.platform,
+    payloadKeys: payloadKeys(claimedJob.payload),
   });
 
   return publicAgentJob(claimedJob);
@@ -824,6 +942,48 @@ export async function updateAgentJobStatus({
     },
   });
 
+  console.log("[agent-service] job:status-updated", {
+    userId: updatedJob.userId,
+    deviceId: device.id,
+    jobId: updatedJob.id,
+    jobType: updatedJob.type,
+    platform: updatedJob.platform,
+    status: updatedJob.status,
+    error: updatedJob.error ?? null,
+  });
+
+  if (updatedJob.status === AgentJobStatus.RUNNING) {
+    console.log("[agent-service] job:running", {
+      userId: updatedJob.userId,
+      deviceId: device.id,
+      jobId: updatedJob.id,
+      jobType: updatedJob.type,
+      platform: updatedJob.platform,
+    });
+  }
+
+  if (updatedJob.status === AgentJobStatus.COMPLETED) {
+    console.log("[agent-service] job:completed", {
+      userId: updatedJob.userId,
+      deviceId: device.id,
+      jobId: updatedJob.id,
+      jobType: updatedJob.type,
+      platform: updatedJob.platform,
+    });
+  }
+
+  if (updatedJob.status === AgentJobStatus.FAILED) {
+    console.log("[agent-service] job:failed", {
+      userId: updatedJob.userId,
+      deviceId: device.id,
+      jobId: updatedJob.id,
+      jobType: updatedJob.type,
+      platform: updatedJob.platform,
+      error: updatedJob.error ?? null,
+      code: jobErrorCode(updatedJob),
+    });
+  }
+
   if (
     updatedJob.type === AgentJobType.CONNECT_PLATFORM &&
     updatedJob.platform &&
@@ -855,6 +1015,9 @@ export async function updateAgentJobStatus({
   ) {
     const payload = updatedJob.payload as {
       articleId?: string;
+      publicationId?: string;
+      variantId?: string;
+      strategyTaskId?: string | null;
     };
     const resultPayload = updatedJob.result as {
       publishedUrl?: string;
@@ -867,13 +1030,13 @@ export async function updateAgentJobStatus({
           status: AssetStatus.PUBLISHED,
           variants: {
             updateMany: {
-              where: {},
+              where: payload.variantId ? { id: payload.variantId } : {},
               data: { status: VariantStatus.PUBLISHED },
             },
           },
           publications: {
             updateMany: {
-              where: {},
+              where: payload.publicationId ? { id: payload.publicationId } : {},
               data: {
                 status: PublicationStatus.PUBLISHED,
                 publishedAt: now,
@@ -882,6 +1045,26 @@ export async function updateAgentJobStatus({
               },
             },
           },
+        },
+      });
+      console.log("[agent-service] publication-status:updated", {
+        userId: updatedJob.userId,
+        articleId: payload.articleId,
+        publicationId: payload.publicationId ?? null,
+        status: PublicationStatus.PUBLISHED,
+        jobId: updatedJob.id,
+      });
+    }
+
+    if (payload.strategyTaskId) {
+      await prisma.strategyArticleTask.updateMany({
+        where: {
+          id: payload.strategyTaskId,
+          strategy: { userId: updatedJob.userId },
+        },
+        data: {
+          status: StrategyArticleTaskStatus.PUBLISHED,
+          error: null,
         },
       });
     }
@@ -893,7 +1076,16 @@ export async function updateAgentJobStatus({
   ) {
     const payload = updatedJob.payload as {
       articleId?: string;
+      publicationId?: string;
+      variantId?: string;
+      strategyTaskId?: string | null;
+      platform?: string;
     };
+    const code = jobErrorCode(updatedJob);
+    const friendlyError =
+      code === "SESSION_EXPIRED"
+        ? "Сессия площадки истекла. Нажмите «Переподключить», чтобы войти заново."
+        : updatedJob.error ?? "Publish failed in Agent.";
 
     if (payload.articleId) {
       await prisma.articleAsset.update({
@@ -901,19 +1093,55 @@ export async function updateAgentJobStatus({
         data: {
           variants: {
             updateMany: {
-              where: {},
+              where: payload.variantId ? { id: payload.variantId } : {},
               data: { status: VariantStatus.FAILED },
             },
           },
           publications: {
             updateMany: {
-              where: {},
+              where: payload.publicationId ? { id: payload.publicationId } : {},
               data: {
                 status: PublicationStatus.FAILED,
-                lastError: updatedJob.error ?? "Publish failed in Agent.",
+                lastError: friendlyError,
               },
             },
           },
+        },
+      });
+      console.log("[agent-service] publication-status:updated", {
+        userId: updatedJob.userId,
+        articleId: payload.articleId,
+        publicationId: payload.publicationId ?? null,
+        status: PublicationStatus.FAILED,
+        jobId: updatedJob.id,
+        error: friendlyError,
+      });
+    }
+
+    if (code === "SESSION_EXPIRED" && payload.platform) {
+      await prisma.platformAccount.updateMany({
+        where: {
+          userId: updatedJob.userId,
+          platform: payload.platform,
+        },
+        data: {
+          status: PlatformAccountStatus.EXPIRED,
+        },
+      });
+    }
+
+    if (payload.strategyTaskId) {
+      await prisma.strategyArticleTask.updateMany({
+        where: {
+          id: payload.strategyTaskId,
+          strategy: { userId: updatedJob.userId },
+        },
+        data: {
+          status:
+            code === "SESSION_EXPIRED"
+              ? StrategyArticleTaskStatus.WAITING_CONNECTION
+              : StrategyArticleTaskStatus.CATCHUP_PENDING,
+          error: friendlyError,
         },
       });
     }
