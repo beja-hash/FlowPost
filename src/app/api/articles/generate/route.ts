@@ -3,6 +3,7 @@ import { z, ZodError } from "zod";
 
 import { generateArticleForUser } from "@/services/article-generation-workflow";
 import { ArticleWorkflowError } from "@/services/article-workflow-error";
+import { getDistributionAssetByIdForUser } from "@/features/distribution/server/distribution-service";
 import { auth } from "@/infrastructure/auth/session";
 
 export const runtime = "nodejs";
@@ -54,6 +55,7 @@ function toErrorResponse(error: unknown) {
 
 export async function POST(request: NextRequest) {
   try {
+    console.log("[article-generate] request received");
     const session = await auth();
 
     if (!session?.user?.id) {
@@ -64,9 +66,49 @@ export async function POST(request: NextRequest) {
     }
 
     const payload = generateSchema.parse(await request.json());
+    console.log("[article-generate] article found/created", {
+      userId: session.user.id,
+      articleId: payload.articleId,
+    });
     const article = await generateArticleForUser(session.user.id, payload.articleId);
+    const asset = await getDistributionAssetByIdForUser(
+      session.user.id,
+      article.id,
+    );
+    const responseBody = {
+      ok: true,
+      articleId: asset.id,
+      publicationId: asset.publicationId,
+      variantId: asset.variantId,
+      title: asset.title,
+      content: asset.canonicalBody,
+      status: "ready",
+      article: {
+        id: asset.id,
+        title: asset.title,
+        content: asset.canonicalBody,
+        status: asset.status,
+        updatedAt: asset.updatedAt,
+      },
+      asset,
+      publication: {
+        status: asset.publicationStatus,
+        scheduledAt: asset.scheduledAt,
+        publishedAt: asset.publishedAt,
+        externalUrl: asset.externalUrl,
+      },
+      variant: {
+        status: asset.variantStatus,
+        platformId: asset.platformId,
+        platformSlug: asset.platformSlug,
+      },
+    };
 
-    return NextResponse.json({ article });
+    console.log("[article-generate] response sent", {
+      articleId: asset.id,
+      contentLength: asset.canonicalBody.length,
+    });
+    return NextResponse.json(responseBody);
   } catch (error) {
     return toErrorResponse(error);
   }

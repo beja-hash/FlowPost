@@ -191,7 +191,9 @@ function mapAsset(record: AssetRecord): DistributionAssetListItem {
     platformId: variant.platform.id,
     platformName: variant.platform.name,
     platformSlug: variant.platform.slug,
+    variantId: variant.id,
     variantStatus: variant.status,
+    publicationId: publication?.id ?? null,
     publicationStatus: publication?.status ?? PublicationStatus.PLANNED,
     publicationLastError: publication?.lastError ?? null,
     scheduledAt: publication?.scheduledAt?.toISOString() ?? null,
@@ -228,7 +230,9 @@ function mapSafeAsset(
     platformId: variant.platform.id,
     platformName: variant.platform.name,
     platformSlug: variant.platform.slug,
+    variantId: variant.id,
     variantStatus: variant.status,
+    publicationId: publication?.id ?? null,
     publicationStatus: publication?.status ?? PublicationStatus.PLANNED,
     publicationLastError: publication?.lastError ?? null,
     scheduledAt: publication?.scheduledAt?.toISOString() ?? null,
@@ -574,6 +578,62 @@ export async function listDistributionAssetsByUser(userId: string) {
 
     return [mapSafeAsset(asset, brand, variant, publicationByAssetId.get(asset.id))];
   });
+}
+
+export async function getDistributionAssetByIdForUser(
+  userId: string,
+  assetId: string,
+) {
+  const record = await prisma.articleAsset.findFirst({
+    where: {
+      id: assetId,
+      workspace: {
+        members: {
+          some: { userId },
+        },
+      },
+      status: {
+        not: AssetStatus.ARCHIVED,
+      },
+    },
+    include: {
+      brand: {
+        select: {
+          id: true,
+          name: true,
+          siteUrl: true,
+        },
+      },
+      variants: {
+        include: {
+          platform: {
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+            },
+          },
+        },
+        take: 1,
+      },
+      publications: {
+        take: 1,
+        orderBy: {
+          createdAt: "desc",
+        },
+      },
+    },
+  });
+
+  if (!record) {
+    throw new DistributionServiceError(
+      404,
+      "ASSET_NOT_FOUND",
+      "Статья не найдена.",
+    );
+  }
+
+  return mapAsset(record);
 }
 
 export async function createDistributionAsset(

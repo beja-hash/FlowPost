@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   CalendarClock,
@@ -85,6 +85,7 @@ export function DistributionManager({
     initialAssets[0]?.id ?? null,
   );
   const [pendingId, setPendingId] = useState<string | null>(null);
+  const pendingActionsRef = useRef(new Set<string>());
   const [generationStatus, setGenerationStatus] = useState<string | null>(null);
 
   const selectedAsset = useMemo(
@@ -110,6 +111,56 @@ export function DistributionManager({
     setSelectedId(nextSelectedId ?? body.assets[0]?.id ?? null);
   }
 
+  async function reloadAsset(assetId: string) {
+    const response = await fetch(`/api/assets/${assetId}`, {
+      cache: "no-store",
+    });
+    const body = (await response.json().catch(() => ({}))) as
+      | { asset: DistributionAssetListItem }
+      | { error?: { message?: string } };
+
+    if (!response.ok || !("asset" in body)) {
+      throw new Error(
+        "error" in body
+          ? body.error?.message ?? "Не удалось обновить статью."
+          : "Не удалось обновить статью.",
+      );
+    }
+
+    setAssets((current) =>
+      current.map((asset) => (asset.id === assetId ? body.asset : asset)),
+    );
+    setSelectedId(assetId);
+    return body.asset;
+  }
+
+  function hasGeneratedContent(asset: DistributionAssetListItem) {
+    const content = asset.canonicalBody.trim();
+    return content.length > 80 && !/^черновик будет сгенерирован/i.test(content);
+  }
+
+  async function recoverGeneratedAsset(assetId: string) {
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[article-generate-ui] fetch failed, refetching article", {
+        assetId,
+      });
+    }
+
+    const asset = await reloadAsset(assetId);
+    if (hasGeneratedContent(asset)) {
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[article-generate-ui] recovered from refetch", {
+          assetId,
+          contentLength: asset.canonicalBody.length,
+        });
+      }
+      toast.success("Статья сгенерирована.");
+      return true;
+    }
+
+    return false;
+  }
+
   async function runArticleAction(
     assetId: string,
     endpoint:
@@ -119,12 +170,18 @@ export function DistributionManager({
     successMessage: string,
     payload: Record<string, unknown> = {},
   ) {
+    if (pendingActionsRef.current.has(assetId)) {
+      return;
+    }
+
+    pendingActionsRef.current.add(assetId);
     setPendingId(assetId);
     const generationMessages = [
-      "Генерация статьи...",
+      "Генерируем статью...",
+      "Это может занять до 30–60 секунд...",
       "Создание структуры...",
-      "Написание статьи...",
-      "Адаптация под платформу...",
+      "Пишем компактный черновик...",
+      "Сохраняем результат...",
     ];
     let generationTimer: number | null = null;
 
@@ -147,6 +204,9 @@ export function DistributionManager({
       }
 
       if (endpoint === "/api/articles/generate") {
+        if (process.env.NODE_ENV !== "production") {
+          console.log("[article-generate-ui] start", { assetId });
+        }
         let messageIndex = 0;
         setGenerationStatus(generationMessages[messageIndex]);
         generationTimer = window.setInterval(() => {
@@ -168,6 +228,8 @@ export function DistributionManager({
         }),
       });
       const body = (await response.json()) as {
+        ok?: boolean;
+        asset?: DistributionAssetListItem;
         status?: "requires_agent" | "queued" | "busy";
         message?: string;
         job?: { id: string };
@@ -180,7 +242,20 @@ export function DistributionManager({
         );
       }
 
-      await reloadAssets(assetId);
+      if (endpoint === "/api/articles/generate" && body.asset) {
+        setAssets((current) =>
+          current.map((asset) => (asset.id === assetId ? body.asset! : asset)),
+        );
+        setSelectedId(assetId);
+        if (process.env.NODE_ENV !== "production") {
+          console.log("[article-generate-ui] success", {
+            assetId,
+            contentLength: body.asset.canonicalBody.length,
+          });
+        }
+      } else {
+        await reloadAssets(assetId);
+      }
       if (body.status === "requires_agent") {
         toast.info(
           body.message ??
@@ -197,10 +272,24 @@ export function DistributionManager({
         toast.success(successMessage);
       }
     } catch (error) {
+      if (endpoint === "/api/articles/generate") {
+        try {
+          if (await recoverGeneratedAsset(assetId)) {
+            return;
+          }
+        } catch (refetchError) {
+          console.error("[article-generate-ui] recovery failed", refetchError);
+        }
+        if (process.env.NODE_ENV !== "production") {
+          console.log("[article-generate-ui] failed", { assetId, error });
+        }
+      }
       toast.error(
-        error instanceof Error
-          ? error.message
-          : "Не удалось выполнить действие.",
+        endpoint === "/api/articles/generate"
+          ? "Не удалось завершить генерацию. Попробуйте еще раз."
+          : error instanceof Error
+            ? error.message
+            : "Не удалось выполнить действие.",
       );
     } finally {
       if (generationTimer) {
@@ -208,6 +297,7 @@ export function DistributionManager({
       }
       setGenerationStatus(null);
       setPendingId(null);
+      pendingActionsRef.current.delete(assetId);
     }
   }
 

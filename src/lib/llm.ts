@@ -62,11 +62,13 @@ export function getLlmClient() {
 
 export async function generateText(
   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+  options: { maxTokens?: number } = {},
 ): Promise<GeneratedTextResult> {
   const model = getArticleGenerationModel();
   const completion = await getLlmClient().chat.completions.create({
     model,
     temperature: 0.7,
+    max_tokens: options.maxTokens,
     messages,
   });
 

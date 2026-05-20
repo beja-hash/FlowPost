@@ -251,32 +251,32 @@ const targetLengthMatrix: Record<
   Record<ArticleContentFormat, Omit<ArticleTargetLength, "reason">>
 > = {
   vc: {
-    opinion: { minChars: 4000, maxChars: 6000 },
-    personal_experience: { minChars: 5000, maxChars: 7000 },
-    teardown: { minChars: 6000, maxChars: 9000 },
-    guide: { minChars: 7000, maxChars: 10000 },
-    comparison: { minChars: 6000, maxChars: 9000 },
-    case_story: { minChars: 6000, maxChars: 9000 },
-    failure_story: { minChars: 6000, maxChars: 9000 },
-    myth_busting: { minChars: 5000, maxChars: 8000 },
-    checklist: { minChars: 5000, maxChars: 7500 },
-    mistakes: { minChars: 5000, maxChars: 8000 },
-    trend_analysis: { minChars: 6000, maxChars: 9000 },
-    decision_guide: { minChars: 6000, maxChars: 9000 },
+    opinion: { minChars: 2500, maxChars: 4000 },
+    personal_experience: { minChars: 2800, maxChars: 4200 },
+    teardown: { minChars: 3000, maxChars: 4500 },
+    guide: { minChars: 3200, maxChars: 4800 },
+    comparison: { minChars: 3000, maxChars: 4500 },
+    case_story: { minChars: 3000, maxChars: 4500 },
+    failure_story: { minChars: 3000, maxChars: 4500 },
+    myth_busting: { minChars: 2800, maxChars: 4200 },
+    checklist: { minChars: 2600, maxChars: 4000 },
+    mistakes: { minChars: 2800, maxChars: 4200 },
+    trend_analysis: { minChars: 3000, maxChars: 4500 },
+    decision_guide: { minChars: 3000, maxChars: 4500 },
   },
   dzen: {
-    opinion: { minChars: 3000, maxChars: 4500 },
-    personal_experience: { minChars: 3500, maxChars: 5500 },
-    teardown: { minChars: 4000, maxChars: 6500 },
-    guide: { minChars: 5000, maxChars: 7500 },
-    comparison: { minChars: 4500, maxChars: 7000 },
-    case_story: { minChars: 4500, maxChars: 7000 },
-    failure_story: { minChars: 4500, maxChars: 7000 },
-    myth_busting: { minChars: 4000, maxChars: 6500 },
-    checklist: { minChars: 4000, maxChars: 6000 },
-    mistakes: { minChars: 4000, maxChars: 6500 },
-    trend_analysis: { minChars: 4500, maxChars: 7000 },
-    decision_guide: { minChars: 4500, maxChars: 7000 },
+    opinion: { minChars: 2500, maxChars: 3800 },
+    personal_experience: { minChars: 2700, maxChars: 4000 },
+    teardown: { minChars: 2800, maxChars: 4200 },
+    guide: { minChars: 3000, maxChars: 4500 },
+    comparison: { minChars: 2900, maxChars: 4300 },
+    case_story: { minChars: 2900, maxChars: 4300 },
+    failure_story: { minChars: 2900, maxChars: 4300 },
+    myth_busting: { minChars: 2800, maxChars: 4200 },
+    checklist: { minChars: 2600, maxChars: 4000 },
+    mistakes: { minChars: 2800, maxChars: 4200 },
+    trend_analysis: { minChars: 2900, maxChars: 4300 },
+    decision_guide: { minChars: 2900, maxChars: 4300 },
   },
 };
 
@@ -296,7 +296,7 @@ function getTargetLength(
 
   return {
     ...range,
-    reason: `${platform === "vc" ? "VC.ru" : "Дзен"} / ${contentFormat}: достаточно места для конфликта, конкретики, структуры и мягкого product block без растягивания водой.`,
+    reason: `${platform === "vc" ? "VC.ru" : "Дзен"} / ${contentFormat}: компактная production-статья на 2500-4000 знаков, максимум около 5000 без воды и повторов.`,
   };
 }
 
@@ -678,7 +678,7 @@ ${JSON.stringify(targetLength, null, 2)}
   trend_analysis = сдвиг рынка → причины → что делать;
   decision_guide = критерии выбора → сценарии → решение.`,
     },
-  ]);
+  ], { maxTokens: 1200 });
 
   const strategy = parseJsonObject<ArticleStrategy>(result.text, "strategy");
   strategy.platform = platform;
@@ -731,6 +731,10 @@ ${productLink ?? "не указана"}
 
 Правила:
 - пиши живо, как человек, а не корпоративный блог;
+- сгенерируй статью объемом 2500-4000 знаков;
+- не превышай 5000 знаков ни при каких условиях;
+- пиши компактно, без воды, без повторов, без длинных вступлений;
+- используй 3-5 смысловых блоков, не делай слишком много разделов;
 - выдерживай целевую длину ${strategy.targetLength.minChars}-${strategy.targetLength.maxChars} символов, но не растягивай водой;
 - product block входит в общий объем;
 - структура должна реально соответствовать contentFormat: ${strategy.contentFormat};
@@ -752,7 +756,7 @@ ${productLink ?? "не указана"}
 - не заканчивай словом "купить";
 - markdown разрешен только для подзаголовков и списков, без таблиц.`,
     },
-  ]);
+  ], { maxTokens: 1800 });
 
   const draft = parseJsonObject<ArticleDraft>(result.text, "draft");
   draft.content = normalizeGeneratedContent(draft.content);
@@ -833,7 +837,8 @@ ${[...qualityIssues, ...previousIssues].length > 0 ? `Проблемы пред�
 - Правильный смысл: это не гарантия лидов на следующий день, а способ быстрее тестировать темы, получать охваты и строить органический канал, который не зависит только от рекламного бюджета.
 - Финал должен быть короче draft-финала: не повторять статью, честно объяснять продукт, показывать кому подходит, мягко вести к CTA и ссылке.
 - Product block: ${productName} помогает запускать регулярную дистрибуцию статей на VC.ru и Дзене: генерировать материалы, адаптировать их под площадки и публиковать без ручной рутины. Это не замена стратегии и не гарантия лидов.
-- Целевая длина всей статьи с product block: ${strategy.targetLength.minChars}-${strategy.targetLength.maxChars} символов. Если короче — добавь полезную конкретику, а не воду. Если длиннее — сократи повторы и корпоративные абзацы.
+- Целевая длина всей статьи с product block: ${strategy.targetLength.minChars}-${strategy.targetLength.maxChars} символов, hard max 5000 знаков. Если длиннее — жестко сократи повторы, вступления и корпоративные абзацы.
+- Не расширяй статью ради объема: 3-5 смысловых блоков достаточно.
 - Формат ${strategy.contentFormat} должен быть виден в структуре, а не только указан в metadata.
 - Тон ${strategy.tone} должен быть слышен в языке текста.
 - Если платформа Дзен, не используй markdown-разметку: никаких ###, ##, **bold**, [text](url), backticks. Подзаголовки должны быть обычными строками.
@@ -849,7 +854,9 @@ Quality gate:
       },
     ];
 
-  const result = await generateText(buildPolishMessages(draft));
+  const result = await generateText(buildPolishMessages(draft), {
+    maxTokens: 1800,
+  });
 
   let polished = parseJsonObject<PolishedArticle>(result.text, "polish");
   polished.content = normalizeGeneratedContent(polished.content);
@@ -867,6 +874,7 @@ Quality gate:
         ...polished.warnings,
         `qualityScore ниже 8: ${polished.qualityScore}`,
       ]),
+      { maxTokens: 1800 },
     );
     const retryPolished = parseJsonObject<PolishedArticle>(
       retry.text,
@@ -984,7 +992,7 @@ ${JSON.stringify(article, null, 2)}
 - Если ${lengthFit} !== "ok", снизь lengthFit и overallScore.
 - rewriteRequired = true, если overallScore < 8 или есть критичные нарушения.`,
     },
-  ]);
+  ], { maxTokens: 1200 });
 
   const report = parseJsonObject<ArticleQualityReport>(result.text, "quality_check");
   validateQualityReport(report);

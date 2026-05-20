@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { PublicationStatus, TopicIntent } from "@prisma/client";
@@ -93,9 +93,10 @@ function BriefGenerateButton({
 }
 
 const generationMessages = [
-  "Сбор стратегии...",
-  "Написание черновика...",
-  "Редакторская полировка...",
+  "Генерируем статью...",
+  "Это может занять до 30–60 секунд...",
+  "Пишем компактный черновик...",
+  "Сохраняем результат...",
 ];
 
 const publicationLabels: Record<PublicationStatus, string> = {
@@ -222,12 +223,14 @@ async function parseAssetResponse(response: Response) {
 }
 
 async function reloadAsset(assetId: string) {
-  const response = await fetch("/api/assets");
+  const response = await fetch(`/api/assets/${assetId}`, {
+    cache: "no-store",
+  });
   const body = (await response.json()) as
-    | { assets: DistributionAssetListItem[] }
+    | { asset: DistributionAssetListItem }
     | { error: { message?: string } };
 
-  if (!response.ok || !("assets" in body)) {
+  if (!response.ok || !("asset" in body)) {
     throw new Error(
       "error" in body
         ? (body.error.message ?? "Не удалось обновить статью.")
@@ -235,13 +238,7 @@ async function reloadAsset(assetId: string) {
     );
   }
 
-  const asset = body.assets.find((item) => item.id === assetId);
-
-  if (!asset) {
-    throw new Error("Статья не найдена после обновления.");
-  }
-
-  return asset;
+  return body.asset;
 }
 
 async function parseBriefResponse<T>(response: Response) {
@@ -269,6 +266,7 @@ export function ArticleEditorPage({
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [currentAsset, setCurrentAsset] = useState(asset);
+  const generationInFlightRef = useRef(false);
   const [form, setForm] = useState(() =>
     getInitialState(brands, platforms, asset),
   );
@@ -295,6 +293,34 @@ export function ArticleEditorPage({
   function syncFromAsset(nextAsset: DistributionAssetListItem) {
     setCurrentAsset(nextAsset);
     setForm(getInitialState(brands, platforms, nextAsset));
+  }
+
+  function hasGeneratedContent(nextAsset: DistributionAssetListItem) {
+    const content = nextAsset.canonicalBody.trim();
+    return content.length > 80 && !/^черновик будет сгенерирован/i.test(content);
+  }
+
+  async function recoverGeneratedAsset(assetId: string) {
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[article-generate-ui] fetch failed, refetching article", {
+        assetId,
+      });
+    }
+
+    const nextAsset = await reloadAsset(assetId);
+    if (hasGeneratedContent(nextAsset)) {
+      syncFromAsset(nextAsset);
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[article-generate-ui] recovered from refetch", {
+          assetId,
+          contentLength: nextAsset.canonicalBody.length,
+        });
+      }
+      toast.success("Статья сгенерирована.");
+      return true;
+    }
+
+    return false;
   }
 
   function getBriefPayload(mode: "field" | "full", targetField?: BriefFieldTarget) {
@@ -489,10 +515,21 @@ export function ArticleEditorPage({
   }
 
   function handleGenerate() {
+    if (generationInFlightRef.current) {
+      return;
+    }
+
     startTransition(async () => {
       let timer: number | null = null;
+      let generatedAssetId: string | null = currentAsset?.id ?? null;
 
       try {
+        generationInFlightRef.current = true;
+        if (process.env.NODE_ENV !== "production") {
+          console.log("[article-generate-ui] start", {
+            assetId: currentAsset?.id ?? null,
+          });
+        }
         let messageIndex = 0;
         setGenerationStatus(generationMessages[messageIndex]);
         timer = window.setInterval(() => {
@@ -504,12 +541,15 @@ export function ArticleEditorPage({
         }, 2500);
 
         const savedAsset = await saveArticle();
+        generatedAssetId = savedAsset.id;
         const response = await fetch("/api/articles/generate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ articleId: savedAsset.id }),
         });
         const body = (await response.json()) as {
+          ok?: boolean;
+          asset?: DistributionAssetListItem;
           status?: "requires_agent" | "queued" | "busy";
           message?: string;
           job?: { id: string };
@@ -522,20 +562,41 @@ export function ArticleEditorPage({
           );
         }
 
-        syncFromAsset(await reloadAsset(savedAsset.id));
+        const nextAsset = body.asset ?? (await reloadAsset(savedAsset.id));
+        syncFromAsset(nextAsset);
+        if (process.env.NODE_ENV !== "production") {
+          console.log("[article-generate-ui] success", {
+            assetId: savedAsset.id,
+            contentLength: nextAsset.canonicalBody.length,
+          });
+        }
         router.replace(`/articles/${savedAsset.id}/edit`);
         toast.success("Статья сгенерирована.");
       } catch (error) {
+        if (generatedAssetId) {
+          try {
+            if (await recoverGeneratedAsset(generatedAssetId)) {
+              return;
+            }
+          } catch (refetchError) {
+            console.error("[article-generate-ui] recovery failed", refetchError);
+          }
+        }
+        if (process.env.NODE_ENV !== "production") {
+          console.log("[article-generate-ui] failed", {
+            assetId: generatedAssetId,
+            error,
+          });
+        }
         toast.error(
-          error instanceof Error
-            ? error.message
-            : "Не удалось сгенерировать статью.",
+          "Не удалось завершить генерацию. Попробуйте еще раз.",
         );
       } finally {
         if (timer) {
           window.clearInterval(timer);
         }
         setGenerationStatus(null);
+        generationInFlightRef.current = false;
       }
     });
   }

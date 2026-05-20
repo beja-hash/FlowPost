@@ -1,10 +1,17 @@
-import { AssetStatus, PublicationStatus, VariantStatus } from "@prisma/client";
+import {
+  AssetStatus,
+  PublicationStatus,
+  VariantStatus,
+  type ArticleAsset,
+} from "@prisma/client";
 
 import type { ArticleContentBrief } from "@/features/distribution/types";
 import { prisma } from "@/infrastructure/db/prisma";
 import { debugLog } from "@/lib/debug-log";
 import { generateArticle } from "@/services/article-generator";
 import { ArticleWorkflowError } from "@/services/article-workflow-error";
+
+const activeGenerations = new Map<string, Promise<ArticleAsset>>();
 
 function logArticleStep(step: string, context: Record<string, unknown> = {}) {
   debugLog("[article-generation-workflow]", { step, ...context });
@@ -114,9 +121,36 @@ async function markArticleFailed(articleId: string, errorMessage: string) {
 
 export async function generateArticleForUser(userId: string, articleId: string) {
   logArticleStep("generate:start", { userId, articleId });
+  console.log("[article-generate] request received", { userId, articleId });
+
+  const existingGeneration = activeGenerations.get(articleId);
+  if (existingGeneration) {
+    console.log("[article-generate] generation already running", {
+      userId,
+      articleId,
+    });
+    return existingGeneration;
+  }
+
+  const generation = generateArticleForUserOnce(userId, articleId).finally(() => {
+    activeGenerations.delete(articleId);
+  });
+  activeGenerations.set(articleId, generation);
+  return generation;
+}
+
+async function generateArticleForUserOnce(userId: string, articleId: string) {
   const { article, variant } = await getArticleForUser(userId, articleId);
+  console.log("[article-generate] article found/created", {
+    userId,
+    articleId,
+    variantId: variant.id,
+    publicationId: article.publications[0]?.id ?? null,
+  });
+  let saved = false;
 
   try {
+    console.log("[article-generate] llm started", { userId, articleId });
     const generated = await generateArticle(
       {
         brand: article.brand,
@@ -139,6 +173,11 @@ export async function generateArticleForUser(userId: string, articleId: string) 
           }),
       },
     );
+    console.log("[article-generate] llm completed", {
+      userId,
+      articleId,
+      contentLength: generated.content.length,
+    });
 
     logArticleStep("generate:usage", {
       userId,
@@ -184,12 +223,22 @@ export async function generateArticleForUser(userId: string, articleId: string) 
         },
       },
     });
+    saved = true;
 
+    console.log("[article-generate] saved", {
+      userId,
+      articleId: updated.id,
+      variantId: variant.id,
+      publicationId: article.publications[0]?.id ?? null,
+      contentLength: generated.content.length,
+    });
     logArticleStep("generate:done", { userId, articleId });
     return updated;
   } catch (error) {
     logArticleError("generate:failed", error, { userId, articleId });
-    await markArticleFailed(article.id, "Generation failed.");
+    if (!saved) {
+      await markArticleFailed(article.id, "Generation failed.");
+    }
     throw error;
   }
 }

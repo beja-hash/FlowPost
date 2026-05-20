@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   archiveDistributionAsset,
   DistributionServiceError,
+  getDistributionAssetByIdForUser,
   updateDistributionAsset,
 } from "@/features/distribution/server/distribution-service";
 import {
@@ -68,6 +69,22 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     const payload = updateDistributionAssetSchema.parse(await request.json());
 
     const asset = await updateDistributionAsset(session.user.id, assetId, payload);
+
+    return NextResponse.json({ asset });
+  } catch (error) {
+    return toErrorResponse(error);
+  }
+}
+
+export async function GET(_request: NextRequest, context: RouteContext) {
+  try {
+    const session = await requireSession();
+    const { assetId: rawAssetId } = await context.params;
+    const assetId = assetIdSchema.parse(rawAssetId);
+    const asset = await getDistributionAssetByIdForUser(
+      session.user.id,
+      assetId,
+    );
 
     return NextResponse.json({ asset });
   } catch (error) {
