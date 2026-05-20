@@ -930,17 +930,107 @@ function createAutomationRunner({ app, sendState, logJob }) {
     return page.locator("body").innerText({ timeout: 5000 }).catch(() => "");
   }
 
-  async function detectCaptcha(page, platform, step) {
-    const bodyText = (await getBodyText(page)).toLowerCase();
-    if (/captcha|капч|я не робот|not a robot|robot check|подтвердите.*робот/.test(bodyText)) {
-      const code = platform === "dzen" ? "DZEN_CAPTCHA_REQUIRED" : "VC_CAPTCHA_REQUIRED";
-      throw automationError(
-        code,
-        "Площадка запросила ручное подтверждение. Подтвердите действие в открытом браузере и повторите публикацию.",
-        `${platform} captcha or robot check detected.`,
-        step,
-      );
+  const captchaTextPattern =
+    /captcha|капч|я не робот|not a robot|robot check|подтвердите.*робот/i;
+  const robotCheckboxPattern = /я не робот|not a robot|i'?m not a robot/i;
+
+  async function locatorText(locator) {
+    return locator.innerText({ timeout: 1000 }).catch(() => "");
+  }
+
+  async function captchaLooksPresent(page, scope = page) {
+    const text =
+      scope === page ? await getBodyText(page) : await locatorText(scope);
+
+    return captchaTextPattern.test(text);
+  }
+
+  async function waitForCaptchaToClear(page, platform, scope = page) {
+    const deadline = Date.now() + 30_000;
+
+    while (Date.now() < deadline) {
+      if (!(await captchaLooksPresent(page, scope))) {
+        await logStep(platform, "captcha cleared");
+        return true;
+      }
+
+      await page.waitForTimeout(500);
     }
+
+    return false;
+  }
+
+  async function robotCheckboxCandidates(scope) {
+    return [
+      scope.getByRole("checkbox", { name: robotCheckboxPattern }),
+      scope.locator('label:has-text("Я не робот") input[type="checkbox"]'),
+      scope.locator('label:has-text("I am not a robot") input[type="checkbox"]'),
+      scope.locator('label:has-text("not a robot") input[type="checkbox"]'),
+      scope.locator('[role="checkbox"]').filter({ hasText: robotCheckboxPattern }),
+      scope.locator('input[type="checkbox"]'),
+    ];
+  }
+
+  async function clickRobotCheckbox(page, platform, scope = page) {
+    await logStep(platform, "captcha detected");
+
+    const candidates = await robotCheckboxCandidates(scope);
+    for (const locator of candidates) {
+      const items = await locator.all().catch(() => []);
+      for (const item of items) {
+        if (!(await item.isVisible({ timeout: 500 }).catch(() => false))) continue;
+        if (await item.isChecked().catch(() => false)) continue;
+
+        const text = await checkboxContextText(item);
+        if (text && !robotCheckboxPattern.test(text)) continue;
+
+        await logStep(platform, "click captcha checkbox", { text });
+        await humanClick(page, item).catch(async () => {
+          await item.click({ timeout: 10_000, force: true });
+        });
+
+        if (await waitForCaptchaToClear(page, platform, scope)) {
+          return true;
+        }
+      }
+    }
+
+    const textLabel = scope.getByText(robotCheckboxPattern).first();
+    if (await textLabel.isVisible({ timeout: 1000 }).catch(() => false)) {
+      await logStep(platform, "click captcha label");
+      await humanClick(page, textLabel).catch(async () => {
+        await textLabel.click({ timeout: 10_000, force: true });
+      });
+
+      if (await waitForCaptchaToClear(page, platform, scope)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  async function handleCaptchaIfPresent(page, platform, step, scope = page) {
+    if (!(await captchaLooksPresent(page, scope))) {
+      return false;
+    }
+
+    if (await clickRobotCheckbox(page, platform, scope)) {
+      await humanDelay(500, 1200);
+      return true;
+    }
+
+    const code = platform === "dzen" ? "DZEN_CAPTCHA_REQUIRED" : "VC_CAPTCHA_REQUIRED";
+    throw automationError(
+      code,
+      "Площадка запросила ручное подтверждение. Agent не смог автоматически пройти проверку «Я не робот».",
+      `${platform} captcha or robot check detected but checkbox was not cleared.`,
+      step,
+    );
+  }
+
+  async function detectCaptcha(page, platform, step) {
+    return handleCaptchaIfPresent(page, platform, step);
   }
 
   async function checkboxContextText(checkbox) {
@@ -978,10 +1068,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
 
   async function handleRegularCheckboxes(page, platform, scope = page) {
     await logStep(platform, "handle checkbox if present");
-    const bodyText = (await getBodyText(page)).toLowerCase();
-    if (/я не робот|not a robot|captcha|капч/.test(bodyText)) {
-      await detectCaptcha(page, platform, "handle checkbox if present");
-    }
+    await handleCaptchaIfPresent(page, platform, "handle checkbox if present", scope);
 
     const checkboxes = [
       scope.getByRole("checkbox", { name: /соглас|услов|правил|agreement|terms/i }),
@@ -1237,6 +1324,14 @@ function createAutomationRunner({ app, sendState, logJob }) {
         );
       }
       await humanClick(page, modalPublish);
+      if (await handleCaptchaIfPresent(page, "dzen", "after final publish click")) {
+        if (
+          (await modalPublish.isVisible({ timeout: 15_000 }).catch(() => false)) &&
+          (await modalPublish.isEnabled().catch(() => false))
+        ) {
+          await humanClick(page, modalPublish);
+        }
+      }
     }
 
     await waitForPublishCompletion(page, "dzen", previousUrl);
