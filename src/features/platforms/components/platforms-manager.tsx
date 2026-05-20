@@ -7,7 +7,10 @@ import { StatusBadge } from "@/components/saas/status-badge";
 import { Button } from "@/components/ui/button";
 import {
   agentProtocolHint,
+  ensureAgentAwakeForAction,
+  fetchAgentState,
   openAgentAndWait,
+  type AgentAwakeForActionResult,
   type AgentConnectionState,
   type AgentStateName,
 } from "@/features/agent/client/agent-wake";
@@ -83,11 +86,11 @@ const agentStatusLabels: Record<AgentJobStatus, string> = {
   waiting_user_login: "Браузер открыт. Ожидаем входа в платформу",
   completed: "Подключение завершено",
   failed: "Ошибка подключения",
-  cancelled: "Подключение отменено",
+  cancelled: "Задача отменена",
 };
 
 const defaultAgentState: AgentConnectionState = {
-  state: "none",
+  state: "not_paired",
   device: null,
   busyJob: null,
   lastSeenAt: null,
@@ -148,6 +151,11 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
       }
 
       const nextJob = body.job;
+      if (nextJob.status === "cancelled") {
+        setAgentConnect(null);
+        return;
+      }
+
       setAgentConnect((current) =>
         current ? { ...current, job: nextJob } : current,
       );
@@ -235,43 +243,47 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
     setAgentNotice(nextState);
   }
 
-  async function ensureAgentReady() {
-    if (agentState.state === "active" || agentState.state === "busy") {
-      return agentState;
-    }
+  async function ensureAgentReadyForAction(
+    readyMessage: string,
+  ): Promise<AgentAwakeForActionResult | null> {
+    showAgentSetup("starting");
+    toast.info(agentProtocolHint);
 
-    if (agentState.state === "none") {
-      showAgentSetup("none");
-      toast.info("Для запуска браузера установите и подключите FlowPost Agent.");
-      return agentState;
-    }
-
-    showAgentSetup("paired_offline");
-    const nextAgent = await openAgentAndWait({
+    const result = await ensureAgentAwakeForAction({
       onStatus: (message) => toast.info(message),
+      readyMessage,
     });
-    setAgentState(nextAgent);
 
-    if (nextAgent.state !== "active" && nextAgent.state !== "busy") {
-      showAgentSetup(nextAgent.state);
+    if (!result) {
+      const nextAgent = await fetchAgentState();
+      setAgentState(nextAgent);
+      showAgentSetup(nextAgent.device ? "paired_offline" : "not_paired");
+      toast.error(
+        "Не удалось открыть FlowPost Agent. Откройте приложение вручную или переустановите Agent.",
+      );
+      return null;
     }
 
-    return nextAgent;
+    setAgentState(result.agent);
+    setAgentNotice(null);
+    return result;
   }
 
   async function handleConnect(platform: PlatformConnection) {
     setConnectingPlatform(platform.platform);
-    const readyAgent = await ensureAgentReady();
+    const readyAgent = await ensureAgentReadyForAction(
+      "Agent запущен. Открываем браузер...",
+    );
 
-    if (readyAgent.state === "busy") {
-      toast.info(
-        "FlowPost Agent занят. Agent уже выполняет задачу. Дождитесь завершения или обновите статус.",
-      );
+    if (!readyAgent) {
       setConnectingPlatform(null);
       return;
     }
 
-    if (readyAgent.state !== "active") {
+    if (readyAgent.agent.state === "busy") {
+      toast.info(
+        "FlowPost Agent занят. Agent уже выполняет задачу. Дождитесь завершения или обновите статус.",
+      );
       setConnectingPlatform(null);
       return;
     }
@@ -287,6 +299,8 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
         },
         body: JSON.stringify({
           platform: platform.platform,
+          mode: platform.status === "not_connected" ? "connect" : "reconnect",
+          agentWakeStartedAt: readyAgent.wakeStartedAt,
         }),
       });
 
@@ -341,17 +355,19 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
 
   async function handleLaunch(platform: PlatformConnection) {
     setLaunchingPlatform(platform.platform);
-    const readyAgent = await ensureAgentReady();
+    const readyAgent = await ensureAgentReadyForAction(
+      "Agent запущен. Открываем браузер...",
+    );
 
-    if (readyAgent.state === "busy") {
-      toast.info(
-        "FlowPost Agent занят. Agent уже выполняет задачу. Дождитесь завершения или обновите статус.",
-      );
+    if (!readyAgent) {
       setLaunchingPlatform(null);
       return;
     }
 
-    if (readyAgent.state !== "active") {
+    if (readyAgent.agent.state === "busy") {
+      toast.info(
+        "FlowPost Agent занят. Agent уже выполняет задачу. Дождитесь завершения или обновите статус.",
+      );
       setLaunchingPlatform(null);
       return;
     }
@@ -366,6 +382,7 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
         },
         body: JSON.stringify({
           platform: platform.platform,
+          agentWakeStartedAt: readyAgent.wakeStartedAt,
         }),
       });
 
@@ -495,10 +512,7 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
     }
   }
 
-  const activeAgent =
-    agentState.state === "active" || agentState.state === "busy"
-      ? agentState.device
-      : null;
+  const pairedAgent = agentState.device;
 
   return (
     <div className="space-y-5">
@@ -517,15 +531,14 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
         onDisconnectAgent={() => setAgentDisconnectOpen(true)}
       />
 
-      {agentConnect ? (
+      {agentConnect && agentConnect.job.status !== "cancelled" ? (
         <div className="border-border/70 bg-muted/25 space-y-3 rounded-xl border p-4">
           <div className="flex flex-wrap items-center gap-3">
             <StatusBadge
               tone={
                 agentConnect.job.status === "completed"
                   ? "positive"
-                  : agentConnect.job.status === "failed" ||
-                      agentConnect.job.status === "cancelled"
+                  : agentConnect.job.status === "failed"
                     ? "warning"
                     : "neutral"
               }
@@ -557,6 +570,7 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
               <CardAction>
                 <PlatformActions
                   platform={platform}
+                  isConnecting={connectingPlatform === platform.platform}
                   isLaunching={launchingPlatform === platform.platform}
                   isDisconnecting={disconnectingPlatform === platform.platform}
                   onConnect={() => void handleConnect(platform)}
@@ -663,24 +677,23 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
               <StatusBadge
                 tone={agentDevices.length > 0 ? "positive" : "neutral"}
               >
-                {activeAgent ? "Agent подключен" : "Agent не подключен"}
+                {pairedAgent ? "Agent подключен" : "Agent не подключен"}
               </StatusBadge>
               <span className="text-muted-foreground text-xs">
-                {activeAgent?.lastSeenAt
-                  ? `Последняя активность: ${new Date(activeAgent.lastSeenAt).toLocaleString()}`
+                {pairedAgent?.lastSeenAt
+                  ? `Последняя активность: ${new Date(pairedAgent.lastSeenAt).toLocaleString()}`
                   : "Чтобы открыть браузер на вашем компьютере, установите FlowPost Agent."}
               </span>
             </div>
 
-            {agentConnect ? (
+            {agentConnect && agentConnect.job.status !== "cancelled" ? (
               <div className="border-border/70 bg-muted/25 space-y-4 rounded-xl border p-4">
                 <div className="flex flex-wrap items-center gap-3">
                   <StatusBadge
                     tone={
                       agentConnect.job.status === "completed"
                         ? "positive"
-                        : agentConnect.job.status === "failed" ||
-                            agentConnect.job.status === "cancelled"
+                        : agentConnect.job.status === "failed"
                           ? "warning"
                           : "neutral"
                     }
@@ -714,7 +727,7 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
               disabled={
                 connectingPlatform !== null ||
                 agentConnect !== null ||
-                agentDevices.length === 0
+                !agentState.device
               }
             >
               {connectingPlatform ? "Создание задания..." : "Открыть браузер"}
@@ -762,12 +775,14 @@ export function PlatformsManager({ initialPlatforms }: PlatformsManagerProps) {
 function PlatformActions({
   platform,
   isLaunching,
+  isConnecting,
   isDisconnecting,
   onConnect,
   onLaunch,
   onDisconnect,
 }: {
   platform: PlatformConnection;
+  isConnecting: boolean;
   isLaunching: boolean;
   isDisconnecting: boolean;
   onConnect: () => void;
@@ -785,8 +800,13 @@ function PlatformActions({
         >
           {isLaunching ? "Запуск..." : "Запустить"}
         </Button>
-        <Button variant="outline" size="sm" onClick={onConnect}>
-          Переподключить
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onConnect}
+          disabled={isConnecting}
+        >
+          {isConnecting ? "Запуск..." : "Переподключить"}
         </Button>
         <Button
           variant="ghost"
@@ -801,8 +821,17 @@ function PlatformActions({
   }
 
   return (
-    <Button variant="outline" size="sm" onClick={onConnect}>
-      {platform.status === "expired" ? "Переподключить" : "Подключить"}
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={onConnect}
+      disabled={isConnecting}
+    >
+      {isConnecting
+        ? "Запуск..."
+        : platform.status === "expired"
+          ? "Переподключить"
+          : "Подключить"}
     </Button>
   );
 }
@@ -829,19 +858,35 @@ function AgentStatePanel({
     agent.device && (agent.state === "active" || agent.state === "paired_offline"),
   );
 
+  if (state === "starting") {
+    return (
+      <div className="border-border/70 bg-muted/20 rounded-xl border p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusBadge tone="warning">Запускаем Agent</StatusBadge>
+          <span className="text-muted-foreground text-xs">
+            {lastSeenAt ? `Последняя активность: ${lastSeenAt}` : null}
+          </span>
+        </div>
+        <p className="text-muted-foreground mt-2 text-sm">
+          Ждем свежий heartbeat после открытия FlowPost Agent.
+        </p>
+      </div>
+    );
+  }
+
   if (state === "active") {
     return (
       <div className="border-border/70 bg-muted/20 rounded-xl border p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <StatusBadge tone="positive">Agent подключен</StatusBadge>
+              <StatusBadge tone="positive">Agent запущен</StatusBadge>
               <span className="text-muted-foreground text-xs">
                 {lastSeenAt ? `Последняя активность: ${lastSeenAt}` : null}
               </span>
             </div>
             <p className="text-muted-foreground mt-2 text-sm">
-              Браузер будет открыт на вашем компьютере.
+              Agent привязан к аккаунту и сейчас отвечает.
             </p>
           </div>
           {canDisconnectAgent ? (
@@ -880,7 +925,7 @@ function AgentStatePanel({
       <div className="border-border/70 bg-muted/20 rounded-xl border p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <StatusBadge tone="warning">FlowPost Agent не запущен</StatusBadge>
+            <StatusBadge tone="warning">Agent подключен</StatusBadge>
             <h2 className="mt-3 text-base font-semibold">
               FlowPost Agent не запущен
             </h2>

@@ -140,6 +140,8 @@ enum AgentDeviceStatus {
 
 enum AgentJobType {
   CONNECT_PLATFORM
+  OPEN_PLATFORM
+  RECONNECT_PLATFORM
   PUBLISH_ARTICLE
 }
 

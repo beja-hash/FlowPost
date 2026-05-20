@@ -1,6 +1,11 @@
 "use client";
 
-export type AgentStateName = "none" | "paired_offline" | "active" | "busy";
+export type AgentStateName =
+  | "not_paired"
+  | "paired_offline"
+  | "starting"
+  | "active"
+  | "busy";
 
 export type AgentConnectionState = {
   state: AgentStateName;
@@ -25,10 +30,16 @@ export const agentProtocolHint =
   "При первом запуске браузер может спросить разрешение открыть FlowPost Agent. Отметьте 'Запомнить мой выбор', чтобы в следующий раз Agent открывался автоматически.";
 
 const defaultAgentState: AgentConnectionState = {
-  state: "none",
+  state: "not_paired",
   device: null,
   busyJob: null,
   lastSeenAt: null,
+};
+
+export type AgentAwakeForActionResult = {
+  agent: AgentConnectionState;
+  device: NonNullable<AgentConnectionState["device"]>;
+  wakeStartedAt: string;
 };
 
 function wait(ms: number) {
@@ -50,34 +61,78 @@ export async function fetchAgentState() {
   return body.agent ?? defaultAgentState;
 }
 
-export async function openAgentAndWait({
-  onStatus,
-}: {
-  onStatus?: (message: string) => void;
-} = {}) {
-  onStatus?.("Запускаем FlowPost Agent...");
-  window.location.href = "flowpost-agent://wake";
+export async function waitForFreshAgentHeartbeat(
+  wakeStartedAt: Date,
+  {
+    onStatus,
+    timeoutMs = 7000,
+    intervalMs = 500,
+  }: {
+    onStatus?: (message: string) => void;
+    timeoutMs?: number;
+    intervalMs?: number;
+  } = {},
+) {
+  const deadline = Date.now() + timeoutMs;
+  let lastAgent = await fetchAgentState();
 
-  await wait(1200);
+  while (Date.now() < deadline) {
+    await wait(intervalMs);
+    lastAgent = await fetchAgentState();
 
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const agent = await fetchAgentState();
+    const lastSeenAt = lastAgent.device?.lastSeenAt ?? lastAgent.lastSeenAt;
+    const lastSeenTime = lastSeenAt ? new Date(lastSeenAt).getTime() : 0;
 
-    if (agent.state === "active") {
-      onStatus?.("Agent запущен. Отправляем задачу...");
-      return agent;
+    if (lastSeenTime >= wakeStartedAt.getTime() && lastAgent.device) {
+      return {
+        agent: lastAgent,
+        device: lastAgent.device,
+        wakeStartedAt: wakeStartedAt.toISOString(),
+      };
     }
-
-    if (agent.state === "busy") {
-      onStatus?.("Agent выполняет задачу. Дождитесь завершения.");
-      return agent;
-    }
-
-    await wait(800);
   }
 
   onStatus?.(
     "Не удалось открыть FlowPost Agent. Откройте приложение вручную или установите его заново.",
   );
-  return fetchAgentState();
+  return null;
+}
+
+export async function ensureAgentAwakeForAction({
+  onStatus,
+  readyMessage = "Agent запущен. Отправляем задачу...",
+}: {
+  onStatus?: (message: string) => void;
+  readyMessage?: string;
+} = {}) {
+  const wakeStartedAt = new Date();
+
+  onStatus?.("Запускаем FlowPost Agent...");
+  window.location.href = "flowpost-agent://wake";
+
+  const result = await waitForFreshAgentHeartbeat(wakeStartedAt, {
+    onStatus,
+  });
+
+  if (!result) {
+    return null;
+  }
+
+  if (result.agent.state === "busy") {
+    onStatus?.("Agent запущен, но сейчас занят.");
+    return result;
+  }
+
+  onStatus?.(readyMessage);
+  return result;
+}
+
+export async function openAgentAndWait({
+  onStatus,
+}: {
+  onStatus?: (message: string) => void;
+} = {}) {
+  const result = await ensureAgentAwakeForAction({ onStatus });
+
+  return result?.agent ?? fetchAgentState();
 }

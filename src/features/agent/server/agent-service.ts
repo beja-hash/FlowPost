@@ -25,6 +25,11 @@ const PAIRING_TTL_MINUTES = 15;
 const ACTIVE_AGENT_WINDOW_MS = 60 * 1000;
 const STALE_RUNNING_JOB_MS = 10 * 60 * 1000;
 const STALE_INTERACTIVE_JOB_MS = 2 * 60 * 1000;
+const INTERACTIVE_PLATFORM_JOB_TYPES = [
+  "CONNECT_PLATFORM",
+  "OPEN_PLATFORM",
+  "RECONNECT_PLATFORM",
+] as AgentJobType[];
 
 export class AgentServiceError extends Error {
   constructor(
@@ -94,15 +99,37 @@ function availableAgentJobTypes(types: string[]) {
 }
 
 function interactivePlatformJobTypes() {
-  return availableAgentJobTypes([
-    "CONNECT_PLATFORM",
-    "OPEN_PLATFORM",
-    "RECONNECT_PLATFORM",
-  ]);
+  return INTERACTIVE_PLATFORM_JOB_TYPES;
 }
 
 function publishAgentJobTypes() {
   return availableAgentJobTypes(["PUBLISH_ARTICLE", "SCHEDULED_PUBLISH"]);
+}
+
+function parseActionStartedAt(value?: string | Date | null) {
+  if (!value) {
+    return null;
+  }
+
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function isFreshAfterAction(
+  device: Pick<AgentDevice, "lastSeenAt"> | null,
+  actionStartedAt?: string | Date | null,
+) {
+  const startedAt = parseActionStartedAt(actionStartedAt);
+
+  if (!device || !isAgentDeviceFresh(device)) {
+    return false;
+  }
+
+  if (!startedAt) {
+    return true;
+  }
+
+  return Boolean(device.lastSeenAt && device.lastSeenAt >= startedAt);
 }
 
 function jobErrorCode(job: Pick<AgentJob, "result" | "error">) {
@@ -210,13 +237,13 @@ export async function getAgentConnectionState(userId: string) {
   if (!latestDevice) {
     console.log("[agent-service] state", {
       userId,
-      state: "none",
+      state: "not_paired",
       activeAgent: false,
       lastSeenAt: null,
     });
 
     return {
-      state: "none" as const,
+      state: "not_paired" as const,
       device: null,
       busyJob: null,
       lastSeenAt: null,
@@ -316,7 +343,7 @@ export async function cleanupStaleAgentJobs(userId?: string) {
         lt: cutoff,
       },
       OR: [
-        { type: AgentJobType.CONNECT_PLATFORM },
+        { type: { in: interactivePlatformJobTypes() } },
         { agentDeviceId: { not: null } },
       ],
     },
@@ -395,6 +422,56 @@ async function cleanupStaleInteractivePlatformJobs({
       userId: userId ?? null,
       platform: platform ?? null,
       agentDeviceId: agentDeviceId ?? null,
+      count: result.count,
+      cutoff,
+      reason,
+    });
+  }
+
+  return result.count;
+}
+
+async function cleanupInteractivePlatformJobsBeforePublish({
+  userId,
+  platform,
+}: {
+  userId: string;
+  platform?: string;
+}) {
+  const cutoff = new Date(Date.now() - STALE_INTERACTIVE_JOB_MS);
+  const reason = "Cancelled stale interactive launch before publish";
+  const result = await prisma.agentJob.updateMany({
+    where: {
+      userId,
+      ...(platform ? { platform } : {}),
+      type: { in: interactivePlatformJobTypes() },
+      OR: [
+        {
+          status: AgentJobStatus.QUEUED,
+        },
+        {
+          status: {
+            in: [
+              AgentJobStatus.PICKED_UP,
+              AgentJobStatus.RUNNING,
+              AgentJobStatus.WAITING_USER_LOGIN,
+            ],
+          },
+          updatedAt: { lt: cutoff },
+        },
+      ],
+    },
+    data: {
+      status: AgentJobStatus.CANCELLED,
+      completedAt: new Date(),
+      error: reason,
+    },
+  });
+
+  if (result.count > 0) {
+    console.log("[agent-service] cleanup:interactive-jobs-before-publish", {
+      userId,
+      platform: platform ?? null,
       count: result.count,
       cutoff,
       reason,
@@ -514,14 +591,10 @@ export async function authenticateAgent(authorization: string | null) {
 }
 
 export async function listAgentDevices(userId: string) {
-  const cutoff = new Date(Date.now() - ACTIVE_AGENT_WINDOW_MS);
   const devices = await prisma.agentDevice.findMany({
     where: {
       userId,
       status: AgentDeviceStatus.ACTIVE,
-      lastSeenAt: {
-        gte: cutoff,
-      },
     },
     orderBy: [{ lastSeenAt: "desc" }, { createdAt: "desc" }],
   });
@@ -680,9 +753,13 @@ export async function revokeAuthenticatedAgent(authorization: string | null) {
 export async function createConnectPlatformJob({
   userId,
   platform,
+  jobType = "CONNECT_PLATFORM" as AgentJobType,
+  agentWakeStartedAt,
 }: {
   userId: string;
   platform: PlatformSlug;
+  jobType?: AgentJobType;
+  agentWakeStartedAt?: string | Date | null;
 }) {
   const config = getPlatformConfig(platform);
 
@@ -706,11 +783,15 @@ export async function createConnectPlatformJob({
       ? await getActiveAgentDevice(userId)
       : null;
 
-  if (!activeDevice) {
+  if (!activeDevice || !isFreshAfterAction(activeDevice, agentWakeStartedAt)) {
     console.log("[agent-service] connect-job:requires-agent", {
       userId,
       platform: config.slug,
       agentState: agent.state,
+      jobType,
+      activeDeviceId: activeDevice?.id ?? null,
+      activeDeviceLastSeenAt: activeDevice?.lastSeenAt ?? null,
+      agentWakeStartedAt: agentWakeStartedAt ?? null,
     });
 
     return {
@@ -738,7 +819,7 @@ export async function createConnectPlatformJob({
   const existingJob = await prisma.agentJob.findFirst({
     where: {
       userId,
-      type: { in: interactivePlatformJobTypes() },
+      type: jobType,
       platform: config.slug,
       status: {
         in: [
@@ -768,7 +849,7 @@ export async function createConnectPlatformJob({
     data: {
       userId,
       agentDeviceId: activeDevice.id,
-      type: AgentJobType.CONNECT_PLATFORM,
+      type: jobType,
       platform: config.slug,
       payload: {
         platform: config.slug,
@@ -803,17 +884,20 @@ export async function createPublishArticleJob({
   articleId,
   allowOfflineQueue = false,
   strategyTaskId,
+  agentWakeStartedAt,
 }: {
   userId: string;
   articleId: string;
   allowOfflineQueue?: boolean;
   strategyTaskId?: string;
+  agentWakeStartedAt?: string | Date | null;
 }) {
   console.log("[agent-service] publish-request:received", {
     userId,
     articleId,
     allowOfflineQueue,
     strategyTaskId: strategyTaskId ?? null,
+    agentWakeStartedAt: agentWakeStartedAt ?? null,
   });
 
   const article = await prisma.articleAsset.findFirst({
@@ -909,18 +993,22 @@ export async function createPublishArticleJob({
     busyJobId: agent.busyJob?.id ?? null,
   });
 
-  await cleanupStaleInteractivePlatformJobs({
+  await cleanupInteractivePlatformJobsBeforePublish({
     userId,
     platform: config.slug,
-    reason: "Cancelled stale interactive platform launch before publish",
   });
 
-  if (!activeDevice && (agent.state === "none" || !allowOfflineQueue)) {
+  const activeDeviceReady = isFreshAfterAction(activeDevice, agentWakeStartedAt);
+
+  if (!activeDeviceReady && !allowOfflineQueue) {
     console.log("[agent-service] publish-job:requires-agent", {
       userId,
       articleId,
       platform: config.slug,
       agentState: agent.state,
+      activeDeviceId: activeDevice?.id ?? null,
+      activeDeviceLastSeenAt: activeDevice?.lastSeenAt ?? null,
+      agentWakeStartedAt: agentWakeStartedAt ?? null,
     });
 
     return {
@@ -1022,7 +1110,7 @@ export async function createPublishArticleJob({
     return tx.agentJob.create({
       data: {
         userId,
-        agentDeviceId: activeDevice?.id,
+        agentDeviceId: activeDeviceReady ? activeDevice?.id : null,
         type: AgentJobType.PUBLISH_ARTICLE,
         platform: config.slug,
         payload: publishPayload,
@@ -1034,7 +1122,7 @@ export async function createPublishArticleJob({
   console.log("[agent-service] publish-job:created", {
     userId,
     articleId,
-    agentDeviceId: activeDevice?.id ?? null,
+    agentDeviceId: activeDeviceReady ? activeDevice?.id ?? null : null,
     jobId: job.id,
     type: job.type,
     platform: config.slug,
@@ -1056,7 +1144,7 @@ export async function createPublishArticleJob({
         ? publishBusyMessage()
         : "Задание публикации создано. FlowPost Agent выполнит публикацию в фоне.",
     agentState: agent.state,
-    agentDevice: activeDevice ? publicAgentDevice(activeDevice) : null,
+    agentDevice: activeDeviceReady && activeDevice ? publicAgentDevice(activeDevice) : null,
     job: publicAgentJob(job),
   };
 }
@@ -1250,7 +1338,8 @@ export async function updateAgentJobStatus({
   }
 
   if (
-    updatedJob.type === AgentJobType.CONNECT_PLATFORM &&
+    (updatedJob.type === ("CONNECT_PLATFORM" as AgentJobType) ||
+      updatedJob.type === ("RECONNECT_PLATFORM" as AgentJobType)) &&
     updatedJob.platform &&
     updatedJob.status === AgentJobStatus.COMPLETED
   ) {

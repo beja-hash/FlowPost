@@ -21,8 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   agentProtocolHint,
-  fetchAgentState,
-  openAgentAndWait,
+  ensureAgentAwakeForAction,
 } from "@/features/agent/client/agent-wake";
 import type { BrandOption } from "@/features/brands/types";
 import type {
@@ -590,32 +589,25 @@ export function ArticleEditorPage({
 
     startTransition(async () => {
       try {
-        const agent = await fetchAgentState();
-        if (agent.state === "none") {
-          toast.info("Для публикации установите и подключите FlowPost Agent.");
+        toast.info(agentProtocolHint);
+        const awake = await ensureAgentAwakeForAction({
+          onStatus: (message) => toast.info(message),
+          readyMessage: "Agent запущен. Отправляем публикацию...",
+        });
+
+        if (!awake) {
+          toast.error("Не удалось открыть FlowPost Agent.");
           return;
-        }
-
-        if (agent.state === "paired_offline") {
-          toast.info("FlowPost Agent не запущен. Мы попробуем открыть его автоматически.");
-          toast.info(agentProtocolHint);
-          const nextAgent = await openAgentAndWait({
-            onStatus: (message) => toast.info(message),
-          });
-
-          if (nextAgent.state !== "active" && nextAgent.state !== "busy") {
-            toast.info(
-              "Не удалось открыть Agent автоматически. Установите приложение или откройте его вручную.",
-            );
-            return;
-          }
         }
 
         const savedAsset = await saveArticle();
         const response = await fetch("/api/articles/publish", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ articleId: savedAsset.id }),
+          body: JSON.stringify({
+            articleId: savedAsset.id,
+            agentWakeStartedAt: awake.wakeStartedAt,
+          }),
         });
         const body = (await response.json()) as {
           status?: "requires_agent" | "queued" | "busy";

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z, ZodError } from "zod";
+import { AgentJobType } from "@prisma/client";
 
 import {
   AgentServiceError,
@@ -18,6 +19,8 @@ export const maxDuration = 600;
 
 const connectPlatformSchema = z.object({
   platform: z.enum(platformSlugs),
+  mode: z.enum(["connect", "reconnect"]).optional(),
+  agentWakeStartedAt: z.string().datetime().optional(),
 });
 
 function toErrorResponse(error: unknown) {
@@ -113,6 +116,11 @@ export async function POST(request: NextRequest) {
     const result = await createConnectPlatformJob({
       userId: session.user.id,
       platform: payload.platform,
+      jobType:
+        payload.mode === "reconnect"
+          ? ("RECONNECT_PLATFORM" as AgentJobType)
+          : AgentJobType.CONNECT_PLATFORM,
+      agentWakeStartedAt: payload.agentWakeStartedAt,
     });
 
     debugLog("[api/platforms/connect]", {

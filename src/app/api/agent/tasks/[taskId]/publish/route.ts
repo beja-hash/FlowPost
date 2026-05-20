@@ -20,9 +20,11 @@ export async function POST(_request: NextRequest, context: RouteContext) {
     const { taskId } = await context.params;
     const payload = (await _request.json().catch(() => ({}))) as {
       force?: boolean;
+      agentWakeStartedAt?: string;
     };
     const result = await runCatchUpPublishingForTask(session.user.id, taskId, {
       ignoreCatchUpWindow: payload.force === true,
+      agentWakeStartedAt: payload.agentWakeStartedAt,
     });
     return NextResponse.json(result);
   } catch (error) {

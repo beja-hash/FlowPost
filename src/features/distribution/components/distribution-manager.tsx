@@ -19,8 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   agentProtocolHint,
-  fetchAgentState,
-  openAgentAndWait,
+  ensureAgentAwakeForAction,
 } from "@/features/agent/client/agent-wake";
 import type { BrandOption } from "@/features/brands/types";
 import type {
@@ -130,27 +129,21 @@ export function DistributionManager({
     let generationTimer: number | null = null;
 
     try {
+      let agentWakeStartedAt: string | undefined;
+
       if (endpoint === "/api/articles/publish") {
-        const agent = await fetchAgentState();
-        if (agent.state === "none") {
-          toast.info("Для публикации установите и подключите FlowPost Agent.");
+        toast.info(agentProtocolHint);
+        const awake = await ensureAgentAwakeForAction({
+          onStatus: (message) => toast.info(message),
+          readyMessage: "Agent запущен. Отправляем публикацию...",
+        });
+
+        if (!awake) {
+          toast.error("Не удалось открыть FlowPost Agent.");
           return;
         }
 
-        if (agent.state === "paired_offline") {
-          toast.info("FlowPost Agent не запущен. Мы попробуем открыть его автоматически.");
-          toast.info(agentProtocolHint);
-          const nextAgent = await openAgentAndWait({
-            onStatus: (message) => toast.info(message),
-          });
-
-          if (nextAgent.state !== "active" && nextAgent.state !== "busy") {
-            toast.info(
-              "Не удалось открыть Agent автоматически. Установите приложение или откройте его вручную.",
-            );
-            return;
-          }
-        }
+        agentWakeStartedAt = awake.wakeStartedAt;
       }
 
       if (endpoint === "/api/articles/generate") {
@@ -170,6 +163,7 @@ export function DistributionManager({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           articleId: assetId,
+          ...(agentWakeStartedAt ? { agentWakeStartedAt } : {}),
           ...payload,
         }),
       });

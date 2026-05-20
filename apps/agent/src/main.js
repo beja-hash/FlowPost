@@ -103,12 +103,14 @@ function getWindowLifecycleState() {
   }
 }
 
-function logLifecycle(action, extra = {}) {
+function logLifecycle(event, payload = {}) {
   const data = {
-    action,
+    event,
+    payload: {
+      ...payload,
+      lifecycle: getWindowLifecycleState(),
+    },
     at: new Date().toISOString(),
-    ...getWindowLifecycleState(),
-    ...extra,
   };
 
   console.log("[flowpost-agent:lifecycle]", data);

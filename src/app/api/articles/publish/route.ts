@@ -13,6 +13,7 @@ export const maxDuration = 600;
 
 const publishSchema = z.object({
   articleId: z.string().cuid(),
+  agentWakeStartedAt: z.string().datetime().optional(),
 });
 
 function toErrorResponse(error: unknown) {
@@ -72,6 +73,7 @@ export async function POST(request: NextRequest) {
     const result = await createPublishArticleJob({
       userId: session.user.id,
       articleId: payload.articleId,
+      agentWakeStartedAt: payload.agentWakeStartedAt,
     });
 
     return NextResponse.json({

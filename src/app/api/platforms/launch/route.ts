@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z, ZodError } from "zod";
+import { AgentJobType } from "@prisma/client";
 
 import {
   AgentServiceError,
@@ -14,6 +15,7 @@ export const dynamic = "force-dynamic";
 
 const launchPlatformSchema = z.object({
   platform: z.enum(platformSlugs),
+  agentWakeStartedAt: z.string().datetime().optional(),
 });
 
 function toErrorResponse(error: unknown) {
@@ -107,6 +109,8 @@ export async function POST(request: NextRequest) {
     const result = await createConnectPlatformJob({
       userId: session.user.id,
       platform: payload.platform,
+      jobType: "OPEN_PLATFORM" as AgentJobType,
+      agentWakeStartedAt: payload.agentWakeStartedAt,
     });
 
     debugLog("[api/platforms/launch]", {

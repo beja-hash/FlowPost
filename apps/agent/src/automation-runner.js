@@ -374,15 +374,33 @@ function createAutomationRunner({ app, sendState, logJob }) {
   }
 
   async function runConnectPlatformJob(job, updateJobStatus) {
+    const jobType = normalizeJobType(job.type);
     const platform = normalizePlatform(job.platform || job.payload?.platform);
     const connectUrl = job.payload?.connectUrl;
+    const openUrl = job.payload?.editorUrl || connectUrl;
 
-    if (!SUPPORTED_PLATFORMS.has(platform) || !connectUrl) {
+    if (!SUPPORTED_PLATFORMS.has(platform) || !openUrl) {
       throw new Error("Задание подключения повреждено.");
     }
 
     await updateJobStatus(job.id, "running");
     setBrowserState("running_job", { status: "browser_opening" });
+
+    if (jobType === "open_platform") {
+      await launchDetachedBrowser(platform, openUrl);
+      await updateJobStatus(job.id, "completed", {
+        result: {
+          platform,
+          browserOpened: true,
+        },
+      });
+      await logJob(job.id, "Браузер открыт локально.");
+      return;
+    }
+
+    if (!connectUrl) {
+      throw new Error("Задание подключения повреждено.");
+    }
 
     const context = await launchContext(platform, { headless: false });
     let finishedLogin;
@@ -951,7 +969,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
   }
 
   function isForbiddenCheckboxText(text) {
-    return /опубликовать позже|позже|дата|время|запланировать|партнерский материал/i.test(text);
+    return /опубликовать позже|позже|дата|время|запланировать|партн[её]рский материал/i.test(text);
   }
 
   function isRequiredAgreementCheckboxText(text) {
@@ -1021,6 +1039,28 @@ function createAutomationRunner({ app, sendState, logJob }) {
         "wait autosave",
       );
     }
+  }
+
+  async function ensureDzenPublishFieldsFilled(page, payload) {
+    const expectedTitle = String(payload.title || "").trim();
+    const expectedBody = String(payload.body || payload.content || "").trim();
+    const titleSample = expectedTitle.slice(0, 24);
+    const bodySample = expectedBody.slice(0, 40);
+
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const text = await getBodyText(page);
+      const hasTitle = !titleSample || text.includes(titleSample);
+      const hasBody = !bodySample || text.includes(bodySample);
+
+      if (hasTitle && hasBody) {
+        return true;
+      }
+
+      await page.waitForTimeout(500);
+    }
+
+    return false;
   }
 
   async function editorLooksOpen(page, minimumFields = 1) {
@@ -1184,6 +1224,8 @@ function createAutomationRunner({ app, sendState, logJob }) {
       while (Date.now() < enabledDeadline) {
         if (await modalPublish.isEnabled().catch(() => false)) break;
         await page.waitForTimeout(500);
+        await waitForAutosave(page, "dzen").catch(() => undefined);
+        await ensureDzenPublishFieldsFilled(page, payload);
         await detectCaptcha(page, "dzen", "handle publish modal");
       }
       if (!(await modalPublish.isEnabled().catch(() => false))) {

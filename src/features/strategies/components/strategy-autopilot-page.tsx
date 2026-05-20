@@ -20,6 +20,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  agentProtocolHint,
+  ensureAgentAwakeForAction,
+} from "@/features/agent/client/agent-wake";
 import type { BrandOption } from "@/features/brands/types";
 import type { PlatformOption } from "@/features/distribution/types";
 
@@ -555,10 +559,37 @@ export function StrategyAutopilotPage({
   ) {
     startTransition(async () => {
       try {
+        let agentWakeStartedAt: string | undefined;
+
+        if (action === "publish") {
+          toast.info(agentProtocolHint);
+          const awake = await ensureAgentAwakeForAction({
+            onStatus: (message) => toast.info(message),
+            readyMessage: "Agent запущен. Отправляем публикацию...",
+          });
+
+          if (!awake) {
+            toast.error("Не удалось открыть FlowPost Agent.");
+            return;
+          }
+
+          agentWakeStartedAt = awake.wakeStartedAt;
+        }
+
+        const requestBody = {
+          ...body,
+          ...(agentWakeStartedAt ? { agentWakeStartedAt } : {}),
+        };
         const response = await fetch(`/api/agent/tasks/${taskId}/${action}`, {
           method: "POST",
-          headers: body ? { "Content-Type": "application/json" } : undefined,
-          body: body ? JSON.stringify(body) : undefined,
+          headers:
+            Object.keys(requestBody).length > 0
+              ? { "Content-Type": "application/json" }
+              : undefined,
+          body:
+            Object.keys(requestBody).length > 0
+              ? JSON.stringify(requestBody)
+              : undefined,
         });
         const payload = (await response.json().catch(() => null)) as
           | { error?: { message?: string } }

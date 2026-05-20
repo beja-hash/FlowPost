@@ -123,6 +123,7 @@ async function publishArticleWithBrowserSession(
   userId: string,
   articleId: string,
   strategyTaskId?: string,
+  options: { agentWakeStartedAt?: string | null } = {},
 ) {
   const { createPublishArticleJob } = await import(
     "@/features/agent/server/agent-service"
@@ -130,8 +131,9 @@ async function publishArticleWithBrowserSession(
   return createPublishArticleJob({
     userId,
     articleId,
-    allowOfflineQueue: true,
+    allowOfflineQueue: !options.agentWakeStartedAt,
     strategyTaskId,
+    agentWakeStartedAt: options.agentWakeStartedAt,
   });
 }
 
@@ -1311,7 +1313,7 @@ export async function getCatchUpTasksForAgent(
 export async function runCatchUpPublishingForTask(
   userId: string,
   taskId: string,
-  options: { ignoreCatchUpWindow?: boolean } = {},
+  options: { ignoreCatchUpWindow?: boolean; agentWakeStartedAt?: string | null } = {},
 ) {
   const now = new Date();
   const task = await prisma.strategyArticleTask.findFirst({
@@ -1426,6 +1428,9 @@ export async function runCatchUpPublishingForTask(
       userId,
       task.articleId,
       task.id,
+      {
+        agentWakeStartedAt: options.agentWakeStartedAt,
+      },
     );
     const nextState = strategyStatusForPublishJob(result);
     await prisma.strategyArticleTask.update({
