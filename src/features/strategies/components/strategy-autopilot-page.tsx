@@ -4,6 +4,8 @@ import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   CalendarClock,
+  CheckCircle2,
+  Eye,
   Loader2,
   Minus,
   Pause,
@@ -11,6 +13,7 @@ import {
   Play,
   Rocket,
   Square,
+  Trash2,
   WandSparkles,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -66,6 +69,8 @@ type StrategyListItem = {
     contentFormat?: string | null;
     tone?: string | null;
     mainThesis?: string | null;
+    weekKey?: string | null;
+    generationBatchId?: string | null;
     articleId: string | null;
     error: string | null;
     attempts?: number;
@@ -186,6 +191,7 @@ function statusLabel(status: string) {
     PAUSED: "Пауза",
     STOPPED: "Остановлена",
     PLANNED: "Запланировано",
+    GENERATING: "Генерируется",
     BRIEF_GENERATED: "Бриф создан",
     ARTICLE_GENERATED: "Статья создана",
     SCHEDULED: "Ожидает публикации",
@@ -220,6 +226,7 @@ function statusTone(status: string): "positive" | "warning" | "danger" | "neutra
   }
 
   if (
+    status === "GENERATING" ||
     status === "SCHEDULED" ||
     status === "ARTICLE_GENERATED" ||
     status === "CATCHUP_PENDING" ||
@@ -296,6 +303,49 @@ function groupTasksByDay(tasks: StrategyListItem["tasks"]) {
   }, {});
 }
 
+function getWeekTasks(strategy?: StrategyListItem | null) {
+  if (!strategy) {
+    return [];
+  }
+
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 7);
+
+  return strategy.tasks.filter((task) => {
+    const scheduledAt = new Date(task.scheduledAt);
+    return scheduledAt >= start && scheduledAt < end;
+  });
+}
+
+function summarizeTasks(tasks: StrategyListItem["tasks"]) {
+  const readyStatuses = new Set([
+    "ARTICLE_GENERATED",
+    "SCHEDULED",
+    "WAITING_AGENT",
+    "MISSED",
+    "CATCHUP_PENDING",
+    "PUBLISHING",
+    "PUBLISHED",
+  ]);
+
+  return tasks.reduce(
+    (acc, task) => {
+      if (task.status === "FAILED") {
+        acc.error += 1;
+      } else if (readyStatuses.has(task.status) || task.articleId) {
+        acc.ready += 1;
+      } else {
+        acc.planned += 1;
+      }
+
+      return acc;
+    },
+    { planned: 0, ready: 0, error: 0 },
+  );
+}
+
 export function StrategyAutopilotPage({
   brands,
   platforms,
@@ -315,9 +365,32 @@ export function StrategyAutopilotPage({
     vc: { start: "09:00", end: "21:00" },
   });
   const [taskTab, setTaskTab] = useState<(typeof taskTabs)[number]["id"]>("all");
+  const [generationState, setGenerationState] = useState<{
+    active: boolean;
+    total: number;
+    done: number;
+    errors: number;
+    message: string;
+    taskStatus: Record<string, "generating" | "ready" | "error">;
+  }>({
+    active: false,
+    total: 0,
+    done: 0,
+    errors: 0,
+    message: "",
+    taskStatus: {},
+  });
   const [isPending, startTransition] = useTransition();
   const activeStrategy =
     strategies.find((strategy) => strategy.id === activeStrategyId) ?? strategies[0];
+  const activeWeekTasks = getWeekTasks(activeStrategy);
+  const activeWeekSummary = summarizeTasks(activeWeekTasks);
+  const activeFailedTasks = activeWeekTasks.filter((task) => task.status === "FAILED");
+  const canLaunchAutopublish =
+    Boolean(activeStrategy) &&
+    activeWeekTasks.length > 0 &&
+    activeWeekSummary.planned === 0 &&
+    activeWeekSummary.error === 0;
 
   const preview = useMemo(() => {
     const start = new Date(`${form.startDate}T00:00:00`);
@@ -551,6 +624,203 @@ export function StrategyAutopilotPage({
     });
   }
 
+  async function postStrategyEndpoint(strategyId: string, action: string) {
+    const response = await fetch(`/api/strategies/${strategyId}/${action}`, {
+      method: "POST",
+    });
+    const payload = (await response.json().catch(() => null)) as
+      | { error?: { message?: string } }
+      | Record<string, unknown>
+      | null;
+
+    if (!response.ok) {
+      const errorPayload = payload as { error?: { message?: string } } | null;
+      throw new Error(
+        errorPayload?.error?.message
+          ? errorPayload.error.message
+          : "Действие не выполнено.",
+      );
+    }
+
+    return payload;
+  }
+
+  function generateWeeklyPlan() {
+    if (!activeStrategy) {
+      toast.error("Сначала сохраните стратегию.");
+      return;
+    }
+
+    setGenerationState({
+      active: true,
+      total: preview.weekTotal,
+      done: 0,
+      errors: 0,
+      message: "Создаём недельный план и уникальные углы подачи...",
+      taskStatus: {},
+    });
+
+    startTransition(async () => {
+      try {
+        const payload = (await postStrategyEndpoint(
+          activeStrategy.id,
+          "generate-plan",
+        )) as { titled?: number; failed?: number; planned?: number };
+        const failed = payload.failed ?? 0;
+        setGenerationState((current) => ({
+          ...current,
+          active: false,
+          total: payload.planned ?? current.total,
+          done: payload.titled ?? current.total,
+          errors: failed,
+          message:
+            failed > 0
+              ? `План создан, но ${failed} тем требуют повтора.`
+              : "План на ближайшие 7 дней создан.",
+        }));
+        toast.success("План на ближайшие 7 дней создан.");
+        router.refresh();
+      } catch (error) {
+        setGenerationState((current) => ({
+          ...current,
+          active: false,
+          errors: Math.max(1, current.errors),
+          message: error instanceof Error ? error.message : "Не удалось создать план.",
+        }));
+        toast.error(error instanceof Error ? error.message : "Не удалось создать план.");
+      }
+    });
+  }
+
+  async function generateTaskText(strategyId: string, taskId: string) {
+    const response = await fetch(`/api/strategies/${strategyId}/tasks/${taskId}/generate`, {
+      method: "POST",
+    });
+    const payload = (await response.json().catch(() => null)) as
+      | { error?: { message?: string } }
+      | null;
+
+    if (!response.ok) {
+      throw new Error(payload?.error?.message ?? "Не удалось сгенерировать статью.");
+    }
+  }
+
+  function generateWeeklyTexts(onlyFailed = false) {
+    if (!activeStrategy) {
+      toast.error("Сначала выберите стратегию.");
+      return;
+    }
+
+    const candidates = activeWeekTasks.filter((task) => {
+      if (task.articleId) {
+        return false;
+      }
+
+      if (onlyFailed) {
+        return task.status === "FAILED";
+      }
+
+      return ["PLANNED", "BRIEF_GENERATED"].includes(task.status);
+    });
+
+    if (!candidates.length) {
+      toast.info(
+        onlyFailed
+          ? "Ошибочных статей для перегенерации нет."
+          : "Сначала создайте план на неделю.",
+      );
+      return;
+    }
+
+    setGenerationState({
+      active: true,
+      total: candidates.length,
+      done: 0,
+      errors: 0,
+      message: onlyFailed
+        ? "Перегенерируем ошибочные статьи..."
+        : "Генерируем тексты пачками по 4 статьи...",
+      taskStatus: Object.fromEntries(
+        candidates.map((task) => [task.id, "generating" as const]),
+      ),
+    });
+
+    startTransition(async () => {
+      let done = 0;
+      let errors = 0;
+
+      for (let index = 0; index < candidates.length; index += 4) {
+        const chunk = candidates.slice(index, index + 4);
+        const results = await Promise.allSettled(
+          chunk.map((task) => generateTaskText(activeStrategy.id, task.id)),
+        );
+
+        setGenerationState((current) => {
+          const taskStatus = { ...current.taskStatus };
+          results.forEach((result, resultIndex) => {
+            const taskId = chunk[resultIndex]?.id;
+            if (!taskId) {
+              return;
+            }
+            taskStatus[taskId] = result.status === "fulfilled" ? "ready" : "error";
+          });
+
+          done += results.filter((result) => result.status === "fulfilled").length;
+          errors += results.filter((result) => result.status === "rejected").length;
+
+          return {
+            ...current,
+            done,
+            errors,
+            taskStatus,
+            message: `Сгенерировано ${done} из ${candidates.length} статей.`,
+          };
+        });
+
+        router.refresh();
+      }
+
+      setGenerationState((current) => ({
+        ...current,
+        active: false,
+        message:
+          errors > 0
+            ? `Готово ${done} из ${candidates.length}. Ошибок: ${errors}.`
+            : `Готово ${done} из ${candidates.length} статей.`,
+      }));
+
+      if (errors > 0) {
+        toast.error(`Генерация завершена с ошибками: ${errors}.`);
+      } else {
+        toast.success("Тексты на неделю сгенерированы.");
+      }
+      router.refresh();
+    });
+  }
+
+  function deleteActiveStrategy(strategyId: string) {
+    startTransition(async () => {
+      try {
+        const response = await fetch(`/api/strategies/${strategyId}`, {
+          method: "DELETE",
+        });
+        const payload = (await response.json().catch(() => null)) as
+          | { error?: { message?: string } }
+          | null;
+
+        if (!response.ok) {
+          throw new Error(payload?.error?.message ?? "Не удалось удалить стратегию.");
+        }
+
+        toast.success("Стратегия удалена.");
+        setActiveStrategyId("");
+        router.refresh();
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Не удалось удалить стратегию.");
+      }
+    });
+  }
+
   function runTaskAction(
     taskId: string,
     action: string,
@@ -635,198 +905,205 @@ export function StrategyAutopilotPage({
     });
   }
 
+  const progressPercent =
+    generationState.total > 0
+      ? Math.round(((generationState.done + generationState.errors) / generationState.total) * 100)
+      : 0;
+
   return (
-    <div className="mx-auto flex w-full max-w-[1320px] flex-col gap-8">
-      <header className="flex flex-col gap-3">
-        <p className="text-muted-foreground text-sm font-medium">Контент-автопилот</p>
-        <h1 className="font-heading text-4xl font-semibold tracking-[-0.05em]">
-          Стратегия публикаций
-        </h1>
-        <p className="text-muted-foreground max-w-3xl text-base leading-7">
-          Настройте частоту, площадки и параметры контента — система будет сама
-          создавать, планировать и публиковать статьи.
-        </p>
-        <div className="mt-2 max-w-4xl rounded-2xl border border-primary/15 bg-primary/8 p-4 text-sm leading-6 text-muted-foreground">
-          Автопубликация на тарифах Standard и Middle работает через
-          подключённый браузер клиента. Если компьютер был выключен или в
-          спящем режиме, пропущенные публикации будут обработаны при следующем
-          запуске.
+    <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-8">
+      <header className="flex flex-col gap-4">
+        <p className="text-muted-foreground text-base font-medium">Контент-автопилот</p>
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+          <div>
+            <h1 className="font-heading text-5xl font-semibold tracking-[-0.04em]">
+              Стратегия
+            </h1>
+            <p className="text-muted-foreground mt-4 max-w-3xl text-lg leading-8">
+              План создаётся только на ближайшие 7 дней. Месячный объём показан
+              как прогноз и не запускает генерацию сотен статей заранее.
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="lg"
+            variant="secondary"
+            disabled={isPending}
+            onClick={() => submitStrategy("DRAFT")}
+          >
+            {isPending ? <Loader2 className="animate-spin" /> : <CheckCircle2 />}
+            Сохранить настройки
+          </Button>
         </div>
       </header>
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,0.95fr)_minmax(360px,0.55fr)]">
-        <Card className="rounded-[2rem] border-border/35 bg-card/70">
-          <CardHeader>
-            <CardTitle className="text-2xl">Настройки стратегии</CardTitle>
-          </CardHeader>
-          <CardContent className="grid gap-6">
-            <Field label="Название стратегии">
-              <Input
-                value={form.name}
-                onChange={(event) => updateField("name", event.target.value)}
-                placeholder="Например: Органический трафик для B2B SaaS"
-              />
-            </Field>
-
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field label="Бренд">
-                <select
-                  value={form.brandId}
-                  onChange={(event) => updateField("brandId", event.target.value)}
-                  className="h-10 rounded-xl border border-input/80 bg-card/80 px-3 text-sm outline-none focus-visible:ring-4 focus-visible:ring-ring"
-                >
-                  {brands.map((brand) => (
-                    <option key={brand.id} value={brand.id}>
-                      {brand.name}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Режим публикации">
-                <select
-                  value={form.publishMode}
-                  onChange={(event) => updateField("publishMode", event.target.value)}
-                  className="h-10 rounded-xl border border-input/80 bg-card/80 px-3 text-sm outline-none focus-visible:ring-4 focus-visible:ring-ring"
-                >
-                  <option value="DRAFT_ONLY">Только создавать черновики</option>
-                  <option value="GENERATE_AND_SCHEDULE">
-                    Генерировать и планировать
-                  </option>
-                  <option value="AUTO_PUBLISH">
-                    Генерировать и публиковать автоматически
-                  </option>
-                </select>
-              </Field>
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field label="Площадки">
-                <div className="flex flex-wrap gap-2">
-                  {platforms
-                    .filter((platform) => ["vc", "dzen"].includes(platform.slug))
-                    .map((platform) => (
-                      <button
-                        key={platform.id}
-                        type="button"
-                        onClick={() => togglePlatform(platform.slug)}
-                        className={`rounded-xl border px-3 py-2 text-sm transition ${
-                          form.platforms.includes(platform.slug)
-                            ? "border-primary/40 bg-primary/10 text-primary"
-                            : "border-border/45 bg-muted/25 text-muted-foreground hover:text-foreground"
-                        }`}
-                      >
-                        {platform.slug === "dzen" ? "Дзен" : "VC.ru"}
-                      </button>
+      <div className="grid gap-7 xl:grid-cols-[minmax(0,1fr)_390px]">
+        <main className="space-y-7">
+          <Card className="rounded-[1.75rem] border-border/35 bg-card/75">
+            <CardHeader className="pb-3">
+              <p className="text-muted-foreground text-sm font-medium">1. Цель стратегии</p>
+              <CardTitle className="text-3xl">Что продвигаем и к чему ведём</CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-5">
+              <div className="grid gap-4 md:grid-cols-2">
+                <Field label="Название стратегии">
+                  <Input
+                    value={form.name}
+                    onChange={(event) => updateField("name", event.target.value)}
+                    placeholder="Органический трафик через VC.ru и Дзен"
+                    className="h-12 text-base"
+                  />
+                </Field>
+                <Field label="Бренд">
+                  <select
+                    value={form.brandId}
+                    onChange={(event) => updateField("brandId", event.target.value)}
+                    className="h-12 rounded-xl border border-input/80 bg-card/80 px-3 text-base outline-none focus-visible:ring-4 focus-visible:ring-ring"
+                  >
+                    {brands.map((brand) => (
+                      <option key={brand.id} value={brand.id}>
+                        {brand.name}
+                      </option>
                     ))}
-                </div>
+                  </select>
+                </Field>
+              </div>
+              <Field label="Общая цель">
+                <Textarea
+                  value={form.goal}
+                  onChange={(event) => updateField("goal", event.target.value)}
+                  placeholder="Получать органический трафик и первые заявки через внешние публикации"
+                  className="min-h-28 text-base"
+                />
               </Field>
-              <div className="rounded-2xl border border-border/35 bg-muted/20 p-4">
-                <p className="text-sm font-medium">Быстрое распределение</p>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => applyDistributionPreset("equal")}
-                    disabled={form.platforms.length < 2}
-                  >
-                    Поровну
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => applyDistributionPreset("more_dzen")}
-                    disabled={form.platforms.length < 2}
-                  >
-                    Больше в Дзен
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => applyDistributionPreset("more_vc")}
-                    disabled={form.platforms.length < 2}
-                  >
-                    Больше в VC.ru
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-            <div className="grid gap-3 md:grid-cols-2">
-              <PlatformCounter
-                label="Дзен"
-                value={form.dzenPerDay}
-                disabled={!form.platforms.includes("dzen")}
-                onChange={(value) => updatePlatformLimit("dzen", value)}
-              />
-              <PlatformCounter
-                label="VC.ru"
-                value={form.vcPerDay}
-                disabled={!form.platforms.includes("vc")}
-                onChange={(value) => updatePlatformLimit("vc", value)}
-              />
-              <div className="md:col-span-2 rounded-2xl bg-muted/30 p-4 text-sm text-muted-foreground">
-                <span className="text-foreground font-medium">
-                  Итого: {preview.perDay} статей в день
-                </span>
-                {" · "}За неделю: {preview.perWeek} статей{" · "}За 30 дней:
-                примерно {preview.perDay * 30} статей
-                {preview.volumeWarning ? (
-                  <p className="mt-2 text-amber-300">{preview.volumeWarning}</p>
-                ) : null}
-              </div>
-            </div>
-
-            <Field label="Время публикаций">
-              <div className="grid gap-4">
-                <p className="text-muted-foreground text-sm leading-6">
-                  Настройте времена отдельно для каждой площадки. Одинаковое время
-                  для разных площадок разрешено: Дзен 10:00 и VC.ru 10:00 не
-                  конфликтуют.
-                </p>
-                {form.platforms.includes("dzen") ? (
-                  <PlatformTimeCard
-                    platform="dzen"
-                    label="Дзен"
-                    dailyLimit={form.dzenPerDay}
-                    slots={preview.dzenSlots}
-                    newSlot={newSlots.dzen}
-                    autoRange={autoRanges.dzen}
-                    onNewSlotChange={(value) => setPlatformNewSlot("dzen", value)}
-                    onAutoRangeChange={(key, value) =>
-                      setPlatformAutoRange("dzen", key, value)
-                    }
-                    onSlotsChange={(slots) => updatePlatformSlots("dzen", slots)}
+              <div className="grid gap-4 md:grid-cols-3">
+                <Field label="CTA">
+                  <Input
+                    value={form.cta}
+                    onChange={(event) => updateField("cta", event.target.value)}
+                    placeholder="Посмотреть демо"
+                    className="h-12 text-base"
                   />
-                ) : null}
-                {form.platforms.includes("vc") ? (
-                  <PlatformTimeCard
-                    platform="vc"
-                    label="VC.ru"
-                    dailyLimit={form.vcPerDay}
-                    slots={preview.vcSlots}
-                    newSlot={newSlots.vc}
-                    autoRange={autoRanges.vc}
-                    onNewSlotChange={(value) => setPlatformNewSlot("vc", value)}
-                    onAutoRangeChange={(key, value) =>
-                      setPlatformAutoRange("vc", key, value)
-                    }
-                    onSlotsChange={(slots) => updatePlatformSlots("vc", slots)}
+                </Field>
+                <Field label="Ссылка">
+                  <Input
+                    value={form.link}
+                    onChange={(event) => updateField("link", event.target.value)}
+                    placeholder="https://site.ru"
+                    className="h-12 text-base md:col-span-2"
                   />
-                ) : null}
+                </Field>
               </div>
-            </Field>
+            </CardContent>
+          </Card>
 
-            <Field label="Дни публикаций">
+          <Card className="rounded-[1.75rem] border-border/35 bg-card/75">
+            <CardHeader className="pb-3">
+              <p className="text-muted-foreground text-sm font-medium">2. Темы и ограничения</p>
+              <CardTitle className="text-3xl">О чём можно писать</CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-5">
+              <Field label="Тематические направления">
+                <Textarea
+                  value={form.topicDirections}
+                  onChange={(event) => updateField("topicDirections", event.target.value)}
+                  placeholder="SEO, дорогая реклама, контент-дистрибуция, ошибки маркетинга"
+                  className="min-h-32 text-base"
+                />
+              </Field>
+              <Field label="Запрещённые темы / ограничения">
+                <Textarea
+                  value={form.forbiddenTopics}
+                  onChange={(event) => updateField("forbiddenTopics", event.target.value)}
+                  placeholder="Не обещать гарантированные лиды, продажи и быстрый SEO-эффект"
+                  className="min-h-28 text-base"
+                />
+              </Field>
+            </CardContent>
+          </Card>
+
+          <Card className="rounded-[1.75rem] border-border/35 bg-card/75">
+            <CardHeader className="pb-3">
+              <p className="text-muted-foreground text-sm font-medium">3. Площадки</p>
+              <CardTitle className="text-3xl">Сколько статей в день</CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-5">
+              <div className="flex flex-wrap gap-3">
+                {platforms
+                  .filter((platform) => ["vc", "dzen"].includes(platform.slug))
+                  .map((platform) => (
+                    <button
+                      key={platform.id}
+                      type="button"
+                      onClick={() => togglePlatform(platform.slug)}
+                      className={`rounded-xl border px-5 py-3 text-base font-medium transition ${
+                        form.platforms.includes(platform.slug)
+                          ? "border-primary/40 bg-primary/10 text-primary"
+                          : "border-border/45 bg-muted/25 text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {platformLabel(platform.slug)}
+                    </button>
+                  ))}
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <PlatformCounter
+                  label="Дзен"
+                  value={form.dzenPerDay}
+                  disabled={!form.platforms.includes("dzen")}
+                  onChange={(value) => updatePlatformLimit("dzen", value)}
+                />
+                <PlatformCounter
+                  label="VC.ru"
+                  value={form.vcPerDay}
+                  disabled={!form.platforms.includes("vc")}
+                  onChange={(value) => updatePlatformLimit("vc", value)}
+                />
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => applyDistributionPreset("equal")}
+                  disabled={form.platforms.length < 2}
+                >
+                  Поровну
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => applyDistributionPreset("more_dzen")}
+                  disabled={form.platforms.length < 2}
+                >
+                  Больше в Дзен
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => applyDistributionPreset("more_vc")}
+                  disabled={form.platforms.length < 2}
+                >
+                  Больше в VC.ru
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="rounded-[1.75rem] border-border/35 bg-card/75">
+            <CardHeader className="pb-3">
+              <p className="text-muted-foreground text-sm font-medium">4. Расписание</p>
+              <CardTitle className="text-3xl">Когда публиковать</CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-5">
               <div className="flex flex-wrap gap-2">
                 {dayLabels.map((label, index) => (
                   <button
                     key={label}
                     type="button"
                     onClick={() => toggleDay(index)}
-                    className={`rounded-xl border px-3 py-2 text-sm transition ${
+                    className={`rounded-xl border px-4 py-3 text-base transition ${
                       form.daysOfWeek.includes(index)
                         ? "border-primary/40 bg-primary/10 text-primary"
                         : "border-border/45 bg-muted/25 text-muted-foreground"
@@ -836,151 +1113,348 @@ export function StrategyAutopilotPage({
                   </button>
                 ))}
               </div>
-            </Field>
 
-            <div className="grid gap-4 md:grid-cols-3">
-              <Field label="Старт">
-                <Input
-                  type="date"
-                  value={form.startDate}
-                  onChange={(event) => updateField("startDate", event.target.value)}
-                />
-              </Field>
-              <Field label="Окончание">
-                <Input
-                  type="date"
-                  value={form.endDate}
-                  onChange={(event) => updateField("endDate", event.target.value)}
-                />
-              </Field>
-              <Field label="Режим генерации">
+              <div className="grid gap-4 md:grid-cols-3">
+                <Field label="Старт">
+                  <Input
+                    type="date"
+                    value={form.startDate}
+                    onChange={(event) => updateField("startDate", event.target.value)}
+                    className="h-12 text-base"
+                  />
+                </Field>
+                <Field label="Окончание">
+                  <Input
+                    type="date"
+                    value={form.endDate}
+                    onChange={(event) => updateField("endDate", event.target.value)}
+                    className="h-12 text-base"
+                  />
+                </Field>
+                <Field label="Режим генерации">
+                  <select
+                    value={form.generationMode}
+                    onChange={(event) => updateField("generationMode", event.target.value)}
+                    className="h-12 rounded-xl border border-input/80 bg-card/80 px-3 text-base outline-none focus-visible:ring-4 focus-visible:ring-ring"
+                  >
+                    <option value="QUALITY">Quality</option>
+                    <option value="FAST">Fast</option>
+                  </select>
+                </Field>
+              </div>
+
+              <Field label="Режим публикации">
                 <select
-                  value={form.generationMode}
-                  onChange={(event) =>
-                    updateField("generationMode", event.target.value)
-                  }
-                  className="h-10 rounded-xl border border-input/80 bg-card/80 px-3 text-sm outline-none focus-visible:ring-4 focus-visible:ring-ring"
+                  value={form.publishMode}
+                  onChange={(event) => updateField("publishMode", event.target.value)}
+                  className="h-12 rounded-xl border border-input/80 bg-card/80 px-3 text-base outline-none focus-visible:ring-4 focus-visible:ring-ring"
                 >
-                  <option value="QUALITY">Quality</option>
-                  <option value="FAST">Fast</option>
+                  <option value="DRAFT_ONLY">Только создавать черновики</option>
+                  <option value="GENERATE_AND_SCHEDULE">Генерировать и планировать</option>
+                  <option value="AUTO_PUBLISH">Генерировать и публиковать автоматически</option>
                 </select>
               </Field>
-            </div>
 
-            <div className="grid gap-4 md:grid-cols-2">
-              <Field label="CTA">
-                <Input
-                  value={form.cta}
-                  onChange={(event) => updateField("cta", event.target.value)}
-                  placeholder="Посмотреть демо"
+              {form.platforms.includes("dzen") ? (
+                <PlatformTimeCard
+                  platform="dzen"
+                  label="Дзен"
+                  dailyLimit={form.dzenPerDay}
+                  slots={preview.dzenSlots}
+                  newSlot={newSlots.dzen}
+                  autoRange={autoRanges.dzen}
+                  onNewSlotChange={(value) => setPlatformNewSlot("dzen", value)}
+                  onAutoRangeChange={(key, value) => setPlatformAutoRange("dzen", key, value)}
+                  onSlotsChange={(slots) => updatePlatformSlots("dzen", slots)}
                 />
-              </Field>
-              <Field label="Ссылка">
-                <Input
-                  value={form.link}
-                  onChange={(event) => updateField("link", event.target.value)}
-                  placeholder="https://site.ru"
+              ) : null}
+              {form.platforms.includes("vc") ? (
+                <PlatformTimeCard
+                  platform="vc"
+                  label="VC.ru"
+                  dailyLimit={form.vcPerDay}
+                  slots={preview.vcSlots}
+                  newSlot={newSlots.vc}
+                  autoRange={autoRanges.vc}
+                  onNewSlotChange={(value) => setPlatformNewSlot("vc", value)}
+                  onAutoRangeChange={(key, value) => setPlatformAutoRange("vc", key, value)}
+                  onSlotsChange={(slots) => updatePlatformSlots("vc", slots)}
                 />
-              </Field>
-            </div>
+              ) : null}
+            </CardContent>
+          </Card>
 
-            <Field label="Общая цель стратегии">
-              <Textarea
-                value={form.goal}
-                onChange={(event) => updateField("goal", event.target.value)}
-                placeholder="Например: получать органический трафик и первые заявки через VC.ru и Дзен без зависимости только от рекламы"
-              />
-            </Field>
-            <Field label="Тематические направления">
-              <Textarea
-                value={form.topicDirections}
-                onChange={(event) =>
-                  updateField("topicDirections", event.target.value)
-                }
-                placeholder="Например: SEO, дорогая реклама, контент-дистрибуция, ошибки маркетинга, сравнение каналов привлечения"
-              />
-            </Field>
-            <Field label="Запрещённые темы / ограничения">
-              <Textarea
-                value={form.forbiddenTopics}
-                onChange={(event) =>
-                  updateField("forbiddenTopics", event.target.value)
-                }
-                placeholder="Например: не обещать гарантированные лиды, не писать про неподдерживаемые платформы"
-              />
-            </Field>
-
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="secondary"
-                disabled={isPending}
-                onClick={() => submitStrategy("DRAFT")}
-              >
-                {isPending ? <Loader2 className="animate-spin" /> : null}
-                Сохранить стратегию
-              </Button>
-              <Button
-                type="button"
-                disabled={isPending}
-                onClick={() => submitStrategy("ACTIVE")}
-              >
-                <Rocket />
-                Запустить автопилот
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        <div className="space-y-6">
-          <Card className="rounded-[2rem] border-border/35 bg-card/70">
-            <CardHeader>
-              <CardTitle>Preview плана</CardTitle>
+          <Card className="rounded-[1.75rem] border-border/35 bg-card/75">
+            <CardHeader className="pb-3">
+              <p className="text-muted-foreground text-sm font-medium">5. Генерация контента на неделю</p>
+              <CardTitle className="text-3xl">Генерация статей на неделю</CardTitle>
             </CardHeader>
             <CardContent className="space-y-5">
-              <p className="text-muted-foreground text-sm leading-6">
-                Будет создано примерно{" "}
-                <span className="text-foreground font-semibold">{preview.total}</span>{" "}
-                статей за {preview.activeDays} дней: {preview.vcTotal} для VC.ru и{" "}
-                {preview.dzenTotal} для Дзена.
-              </p>
-              <div className="grid grid-cols-2 gap-3">
-                <PreviewMetric label="В день" value={preview.perDay} />
-                <PreviewMetric label="В неделю" value={preview.perWeek} />
-                <PreviewMetric label="VC.ru за 7 дней" value={preview.weekVc} />
-                <PreviewMetric label="Дзен за 7 дней" value={preview.weekDzen} />
+              <div className="grid gap-3 md:grid-cols-3">
+                <PreviewMetric label="План недели" value={activeWeekTasks.length} />
+                <PreviewMetric label="Тексты готовы" value={activeWeekSummary.ready} />
+                <PreviewMetric label="С ошибкой" value={activeWeekSummary.error} />
               </div>
-              <div className="rounded-2xl bg-muted/30 p-4 text-sm leading-6 text-muted-foreground">
-                <p className="text-foreground font-medium">На ближайшие 7 дней</p>
-                {form.platforms.includes("dzen") ? (
-                  <p className="mt-2">
-                    Дзен: {form.dzenPerDay} статьи/день × 7 = {preview.weekDzen}.
-                    Время: {preview.dzenSlots.join(", ")}
+
+              <div className="flex flex-wrap gap-3">
+                <Button
+                  type="button"
+                  size="lg"
+                  disabled={!activeStrategy || generationState.active || isPending}
+                  onClick={generateWeeklyPlan}
+                >
+                  {generationState.active ? <Loader2 className="animate-spin" /> : <CalendarClock />}
+                  Сгенерировать план на неделю
+                </Button>
+                <Button
+                  type="button"
+                  size="lg"
+                  variant="secondary"
+                  disabled={!activeStrategy || activeWeekTasks.length === 0 || generationState.active}
+                  onClick={() => generateWeeklyTexts(false)}
+                >
+                  <WandSparkles />
+                  Сгенерировать тексты на неделю
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={!activeStrategy || activeFailedTasks.length === 0 || generationState.active}
+                  onClick={() => generateWeeklyTexts(true)}
+                >
+                  Перегенерировать ошибочные
+                </Button>
+                <a
+                  href="/distribution"
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-xl px-4 text-sm font-medium transition hover:bg-muted/75 hover:text-foreground"
+                >
+                  <Eye className="size-4" />
+                  Посмотреть статьи
+                </a>
+              </div>
+
+              <div className="rounded-2xl border border-border/30 bg-muted/15 p-5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="font-medium">
+                    {generationState.message || `Готово ${activeWeekSummary.ready} из ${activeWeekTasks.length} статей`}
                   </p>
-                ) : null}
-                {form.platforms.includes("vc") ? (
-                  <p>
-                    VC.ru: {form.vcPerDay} статьи/день × 7 = {preview.weekVc}.
-                    Время: {preview.vcSlots.join(", ")}
-                  </p>
-                ) : null}
-                <p className="mt-2 text-foreground">
-                  Всего: {preview.weekTotal} статей. Одинаковое время для разных
-                  площадок разрешено.
+                  <StatusBadge tone={generationState.errors ? "warning" : "info"}>
+                    {generationState.active ? "loading" : generationState.errors ? "error" : "success"}
+                  </StatusBadge>
+                </div>
+                <div className="mt-4 h-3 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-primary transition-all"
+                    style={{ width: `${Math.max(progressPercent, activeWeekTasks.length ? Math.round((activeWeekSummary.ready / activeWeekTasks.length) * 100) : 0)}%` }}
+                  />
+                </div>
+                <p className="text-muted-foreground mt-3 text-sm">
+                  Сгенерировано {generationState.done || activeWeekSummary.ready} из{" "}
+                  {generationState.total || activeWeekTasks.length} статей. Ошибок:{" "}
+                  {generationState.errors || activeWeekSummary.error}.
                 </p>
+              </div>
+
+              <div className="space-y-3">
+                {activeWeekTasks.slice(0, 8).map((task) => (
+                  <StrategyTaskRow
+                    key={task.id}
+                    task={task}
+                    transientStatus={generationState.taskStatus[task.id]}
+                    onAction={runTaskAction}
+                    onStrategyAction={(taskId, action, successMessage) =>
+                      runStrategyTaskAction(activeStrategy?.id ?? "", taskId, action, successMessage)
+                    }
+                  />
+                ))}
+                {activeWeekTasks.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-border/40 p-8 text-center">
+                    <p className="font-medium">Недельный план ещё не создан.</p>
+                  </div>
+                ) : null}
               </div>
             </CardContent>
           </Card>
 
-          <Card className="rounded-[2rem] border-border/35 bg-card/70">
+          {activeStrategy ? (
+            <Card className="rounded-[1.75rem] border-border/35 bg-card/75">
+              <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="text-muted-foreground text-sm font-medium">7. Активные стратегии</p>
+                  <CardTitle className="mt-2 text-3xl">{activeStrategy.name}</CardTitle>
+                  <p className="text-muted-foreground mt-2 text-sm">
+                    {activeStrategy.brandName} · {activeStrategy.platforms.map(platformLabel).join(", ")}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => runAction(activeStrategy.id, "pause", "Стратегия поставлена на паузу.")}
+                  >
+                    <Pause />
+                    Пауза
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => runAction(activeStrategy.id, "resume", "Стратегия продолжена.")}
+                  >
+                    <Play />
+                    Продолжить
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => runAction(activeStrategy.id, "stop", "Стратегия остановлена.")}
+                  >
+                    <Square />
+                    Остановить
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    onClick={() => deleteActiveStrategy(activeStrategy.id)}
+                  >
+                    <Trash2 />
+                    Удалить
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-5">
+                <div className="grid gap-3 md:grid-cols-4">
+                  <PreviewMetric label="Planned" value={activeWeekSummary.planned} />
+                  <PreviewMetric label="Ready" value={activeWeekSummary.ready} />
+                  <PreviewMetric label="Error" value={activeWeekSummary.error} />
+                  <PreviewMetric label="Опубликовано" value={activeStrategy.taskCounts.PUBLISHED ?? 0} />
+                </div>
+
+                <div className="rounded-2xl border border-border/30 bg-muted/10 p-5">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-xl font-semibold">Ближайшие публикации</h3>
+                      <p className="text-muted-foreground mt-1 text-sm">
+                        Дзен: {activeStrategy.dzenPerDay ?? 0} / день · VC.ru:{" "}
+                        {activeStrategy.vcPerDay ?? 0} / день
+                      </p>
+                    </div>
+                    <div className="flex rounded-xl bg-muted/35 p-1">
+                      {taskTabs.map((tab) => (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          onClick={() => setTaskTab(tab.id)}
+                          className={`rounded-lg px-3 py-1.5 text-sm transition ${
+                            taskTab === tab.id
+                              ? "bg-background text-foreground shadow-sm"
+                              : "text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          {tab.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {filteredTasks.length === 0 ? (
+                    <div className="mt-5 rounded-2xl border border-dashed border-border/40 p-8 text-center">
+                      <p className="font-medium">Нет запланированных статей.</p>
+                    </div>
+                  ) : (
+                    <div className="mt-5 space-y-5">
+                      {Object.entries(groupedTasks).map(([day, tasks]) => (
+                        <section key={day} className="space-y-3">
+                          <h4 className="text-muted-foreground text-sm font-medium capitalize">
+                            {formatDay(`${day}T00:00:00`)}
+                          </h4>
+                          <div className="space-y-2">
+                            {tasks.map((task) => (
+                              <StrategyTaskRow
+                                key={task.id}
+                                task={task}
+                                transientStatus={generationState.taskStatus[task.id]}
+                                onAction={runTaskAction}
+                                onStrategyAction={(taskId, action, successMessage) =>
+                                  runStrategyTaskAction(
+                                    activeStrategy.id,
+                                    taskId,
+                                    action,
+                                    successMessage,
+                                  )
+                                }
+                              />
+                            ))}
+                          </div>
+                        </section>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          ) : null}
+        </main>
+
+        <aside className="space-y-6 xl:sticky xl:top-6 xl:self-start">
+          <Card className="rounded-[1.75rem] border-border/35 bg-card/80">
             <CardHeader>
-              <CardTitle>Активные стратегии</CardTitle>
+              <p className="text-muted-foreground text-sm font-medium">6. Preview стратегии</p>
+              <CardTitle className="text-2xl">Ближайшая неделя</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              <p className="text-muted-foreground text-sm leading-6">
+                Будет создано {preview.weekTotal} статей на ближайшие 7 дней:
+                {form.platforms.includes("dzen") ? ` ${preview.weekDzen} для Dzen` : ""}
+                {form.platforms.includes("dzen") && form.platforms.includes("vc") ? " и" : ""}
+                {form.platforms.includes("vc") ? ` ${preview.weekVc} для VC.ru` : ""}.
+                Прогноз на месяц — примерно {preview.perDay * 30} статей, но сейчас
+                генерируется только ближайшая неделя.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <PreviewMetric label="В день" value={preview.perDay} />
+                <PreviewMetric label="За неделю" value={preview.weekTotal} />
+                <PreviewMetric label="За месяц" value={preview.perDay * 30} />
+                <PreviewMetric label="Готово" value={activeWeekSummary.ready} />
+              </div>
+              <div className="rounded-2xl bg-muted/30 p-4 text-sm leading-6 text-muted-foreground">
+                {form.platforms.includes("dzen") ? (
+                  <p>Дзен: {form.dzenPerDay} / день · {preview.dzenSlots.join(", ")}</p>
+                ) : null}
+                {form.platforms.includes("vc") ? (
+                  <p>VC.ru: {form.vcPerDay} / день · {preview.vcSlots.join(", ")}</p>
+                ) : null}
+                <p className="mt-2 text-foreground">
+                  Planned: {activeWeekSummary.planned} · Ready: {activeWeekSummary.ready} · Error: {activeWeekSummary.error}
+                </p>
+              </div>
+              <Button
+                type="button"
+                className="w-full"
+                disabled={!activeStrategy || !canLaunchAutopublish || isPending}
+                onClick={() =>
+                  activeStrategy
+                    ? runAction(activeStrategy.id, "resume", "Автопубликация запущена.")
+                    : undefined
+                }
+              >
+                <Rocket />
+                Запустить автопубликацию
+              </Button>
+              {!canLaunchAutopublish ? (
+                <p className="text-muted-foreground text-sm">
+                  Сначала сгенерируйте тексты на неделю и исправьте ошибки.
+                </p>
+              ) : null}
+            </CardContent>
+          </Card>
+
+          <Card className="rounded-[1.75rem] border-border/35 bg-card/80">
+            <CardHeader>
+              <CardTitle className="text-2xl">Стратегии</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
               {strategies.length === 0 ? (
-                <p className="text-muted-foreground text-sm">
-                  Пока нет стратегий. Настройте первую и запустите автопилот.
-                </p>
+                <p className="text-muted-foreground text-sm">Сохраните первую стратегию.</p>
               ) : null}
               {strategies.map((strategy) => (
                 <button
@@ -1011,185 +1485,8 @@ export function StrategyAutopilotPage({
               ))}
             </CardContent>
           </Card>
-        </div>
+        </aside>
       </div>
-
-      {activeStrategy ? (
-        <Card className="rounded-[2rem] border-border/35 bg-card/70">
-          <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <CardTitle className="text-2xl">{activeStrategy.name}</CardTitle>
-              <p className="text-muted-foreground mt-2 text-sm">
-                {activeStrategy.brandName} · {activeStrategy.platforms.map(platformLabel).join(", ")}
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="secondary"
-                disabled={isPending}
-                onClick={() =>
-                  runAction(
-                    activeStrategy.id,
-                    "generate-week",
-                    "Генерация недели запущена.",
-                  )
-                }
-              >
-                <CalendarClock />
-                Сгенерировать неделю
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                disabled={isPending}
-                onClick={() =>
-                  runAction(
-                    activeStrategy.id,
-                    "fill-week-buffer",
-                    "Неделя догенерирована до буфера.",
-                  )
-                }
-              >
-                <WandSparkles />
-                Догенерировать до 7 дней
-              </Button>
-              <Button
-                type="button"
-                disabled={isPending}
-                onClick={() =>
-                  runAction(
-                    activeStrategy.id,
-                    "generate-next-24h",
-                    "Ближайшие статьи отправлены в генерацию.",
-                  )
-                }
-              >
-                <WandSparkles />
-                Сгенерировать 24 часа
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() =>
-                  runAction(activeStrategy.id, "pause", "Стратегия поставлена на паузу.")
-                }
-              >
-                <Pause />
-                Пауза
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() =>
-                  runAction(activeStrategy.id, "resume", "Стратегия продолжена.")
-                }
-              >
-                <Play />
-                Продолжить
-              </Button>
-              <Button
-                type="button"
-                variant="destructive"
-                onClick={() =>
-                  runAction(activeStrategy.id, "stop", "Стратегия остановлена.")
-                }
-              >
-                <Square />
-                Остановить
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-5">
-            <div className="grid gap-3 md:grid-cols-4">
-              <PreviewMetric
-                label="Запланировано"
-                value={activeStrategy.taskCounts.PLANNED ?? 0}
-              />
-              <PreviewMetric
-                label="Ожидает клиента"
-                value={
-                  (activeStrategy.taskCounts.CATCHUP_PENDING ?? 0) +
-                  (activeStrategy.taskCounts.WAITING_AGENT ?? 0) +
-                  (activeStrategy.taskCounts.WAITING_CONNECTION ?? 0)
-                }
-              />
-              <PreviewMetric
-                label="Опубликовано"
-                value={activeStrategy.taskCounts.PUBLISHED ?? 0}
-              />
-              <PreviewMetric
-                label="Ошибки"
-                value={activeStrategy.taskCounts.FAILED ?? 0}
-              />
-            </div>
-
-            <div className="rounded-2xl border border-border/30 bg-muted/10 p-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-lg font-semibold">Недельный план</h3>
-                  <p className="text-muted-foreground mt-1 text-sm">
-                    Дзен: {activeStrategy.dzenPerDay ?? 0} / день · VC.ru:{" "}
-                    {activeStrategy.vcPerDay ?? 0} / день
-                  </p>
-                </div>
-                <div className="flex rounded-xl bg-muted/35 p-1">
-                  {taskTabs.map((tab) => (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      onClick={() => setTaskTab(tab.id)}
-                      className={`rounded-lg px-3 py-1.5 text-sm transition ${
-                        taskTab === tab.id
-                          ? "bg-background text-foreground shadow-sm"
-                          : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {filteredTasks.length === 0 ? (
-                <div className="mt-5 rounded-2xl border border-dashed border-border/40 p-8 text-center">
-                  <p className="font-medium">Пока нет запланированных статей.</p>
-                  <p className="text-muted-foreground mt-2 text-sm">
-                    Настройте параметры и нажмите «Сгенерировать неделю».
-                  </p>
-                </div>
-              ) : (
-                <div className="mt-5 space-y-5">
-                  {Object.entries(groupedTasks).map(([day, tasks]) => (
-                    <section key={day} className="space-y-3">
-                      <h4 className="text-muted-foreground text-sm font-medium capitalize">
-                        {formatDay(`${day}T00:00:00`)}
-                      </h4>
-                      <div className="space-y-2">
-                        {tasks.map((task) => (
-                          <StrategyTaskRow
-                            key={task.id}
-                            task={task}
-                            onAction={runTaskAction}
-                            onStrategyAction={(taskId, action, successMessage) =>
-                              runStrategyTaskAction(
-                                activeStrategy.id,
-                                taskId,
-                                action,
-                                successMessage,
-                              )
-                            }
-                          />
-                        ))}
-                      </div>
-                    </section>
-                  ))}
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-      ) : null}
     </div>
   );
 }
@@ -1378,10 +1675,12 @@ function PlatformCounter({
 
 function StrategyTaskRow({
   task,
+  transientStatus,
   onAction,
   onStrategyAction,
 }: {
   task: StrategyListItem["tasks"][number];
+  transientStatus?: "generating" | "ready" | "error";
   onAction: (
     taskId: string,
     action: string,
@@ -1391,6 +1690,14 @@ function StrategyTaskRow({
   onStrategyAction: (taskId: string, action: string, successMessage: string) => void;
 }) {
   const title = task.title ?? task.topic ?? "Тема появится после генерации";
+  const visibleStatus =
+    transientStatus === "generating"
+      ? "GENERATING"
+      : transientStatus === "ready"
+        ? "ARTICLE_GENERATED"
+        : transientStatus === "error"
+          ? "FAILED"
+          : task.status;
 
   return (
     <div className="grid gap-3 rounded-2xl border border-border/25 bg-background/35 p-4 text-sm transition hover:border-border/45 md:grid-cols-[80px_90px_minmax(0,1fr)_140px_190px] md:items-center">
@@ -1404,7 +1711,7 @@ function StrategyTaskRow({
           {[task.contentFormat, task.tone].filter(Boolean).join(" · ") || "Формат появится после брифа"}
         </p>
       </div>
-      <StatusBadge tone={statusTone(task.status)}>{statusLabel(task.status)}</StatusBadge>
+      <StatusBadge tone={statusTone(visibleStatus)}>{statusLabel(visibleStatus)}</StatusBadge>
       <div className="flex flex-wrap gap-2 md:justify-end">
         {task.articleId ? (
           <a href={`/articles/${task.articleId}/edit`} className="text-primary hover:underline">
@@ -1448,9 +1755,11 @@ function StrategyTaskRow({
           <button
             type="button"
             className="text-primary hover:underline"
-            onClick={() => onAction(task.id, "retry", "Задача возвращена в очередь.")}
+            onClick={() =>
+              onStrategyAction(task.id, "generate", "Статья отправлена в генерацию.")
+            }
           >
-            Повторить
+            Перегенерировать
           </button>
         ) : null}
         {["MISSED", "FAILED", "WAITING_CONNECTION"].includes(task.status) ? (

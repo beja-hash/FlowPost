@@ -60,12 +60,17 @@ const tones: ArticleTone[] = [
 ];
 
 const briefSchema = z.object({
+  title: z.string().trim().min(4).max(240).optional().default(""),
   topic: z.string().trim().min(4).max(240),
   keyword: z.string().trim().max(160).optional().default(""),
   targetAudience: z.string().trim().min(4).max(500),
   readerPain: z.string().trim().min(4).max(800),
   mainThesis: z.string().trim().min(4).max(800),
   factsExample: z.string().trim().min(4).max(10000),
+  angle: z.string().trim().min(4).max(800).optional().default(""),
+  searchIntent: z.string().trim().min(4).max(500).optional().default(""),
+  ctaBridge: z.string().trim().min(4).max(800).optional().default(""),
+  outline: z.array(z.string().trim().min(2).max(240)).min(3).max(7).optional().default([]),
   contentFormat: z.enum([
     "teardown",
     "case_story",
@@ -113,6 +118,37 @@ function devLog(step: string, context: Record<string, unknown>) {
   if (process.env.NODE_ENV !== "production") {
     console.log("[content-strategy]", { step, ...context });
   }
+}
+
+function startOfDay(date: Date) {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  return next;
+}
+
+function addDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function buildWeekWindow(seed = new Date()) {
+  const start = startOfDay(seed);
+  const end = addDays(start, 7);
+  end.setMilliseconds(end.getMilliseconds() - 1);
+
+  return { start, end };
+}
+
+function buildWeekKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}${month}${day}`;
+}
+
+function buildGenerationBatchId(strategyId: string, weekKey: string) {
+  return `${weekKey}-${strategyId.slice(-8)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function hoursSince(date: Date, now = new Date()) {
@@ -373,6 +409,8 @@ export async function listStrategies(userId: string) {
           contentFormat: true,
           tone: true,
           mainThesis: true,
+          weekKey: true,
+          generationBatchId: true,
           error: true,
           articleId: true,
           attempts: true,
@@ -598,17 +636,20 @@ export async function createWeeklyStrategySchedule(
 ) {
   const strategy = await ensureStrategyAccess(userId, strategyId);
   const daysOfWeek = readNumberArray(strategy.daysOfWeek);
-  const start = new Date(options.startDate ?? new Date());
-  start.setHours(0, 0, 0, 0);
+  const start = startOfDay(options.startDate ?? new Date());
   const days = options.days ?? 7;
   const end = new Date(start);
   end.setDate(start.getDate() + days - 1);
   end.setHours(23, 59, 59, 999);
+  const weekKey = buildWeekKey(start);
+  const generationBatchId = buildGenerationBatchId(strategy.id, weekKey);
   const tasks: Array<{
     strategyId: string;
     brandId: string;
     platform: string;
     scheduledAt: Date;
+    weekKey: string;
+    generationBatchId: string;
   }> = [];
 
   for (let index = 0; index < days; index += 1) {
@@ -629,6 +670,8 @@ export async function createWeeklyStrategySchedule(
         brandId: strategy.brandId,
         platform: item.platform,
         scheduledAt: item.scheduledAt,
+        weekKey,
+        generationBatchId,
       });
     });
   }
@@ -671,37 +714,149 @@ export async function createWeeklyStrategySchedule(
   devLog("plan:week", {
     strategyId,
     brandId: strategy.brandId,
+    weekKey,
+    generationBatchId,
     days,
     planned: tasks.length,
     created,
     skippedDuplicates: tasks.length - created,
   });
-  return { planned: tasks.length, created, skippedDuplicates: tasks.length - created };
+  await prisma.strategyArticleTask.updateMany({
+    where: {
+      strategyId,
+      scheduledAt: { gte: start, lte: end },
+      OR: [{ weekKey: null }, { generationBatchId: null }],
+    },
+    data: {
+      weekKey,
+      generationBatchId,
+    },
+  });
+
+  return {
+    planned: tasks.length,
+    created,
+    skippedDuplicates: tasks.length - created,
+    weekKey,
+    generationBatchId,
+    windowStart: start.toISOString(),
+    windowEnd: end.toISOString(),
+  };
 }
 
 export async function generateStrategyPlan(userId: string, strategyId: string) {
   const strategy = await ensureStrategyAccess(userId, strategyId);
-  const days = Math.max(
-    1,
-    Math.ceil((strategy.endDate.getTime() - strategy.startDate.getTime()) / 86_400_000),
-  );
-
-  return createWeeklyStrategySchedule(userId, strategyId, {
-    startDate: strategy.startDate,
-    days,
+  const requestedStart = strategy.startDate > new Date() ? strategy.startDate : new Date();
+  const plan = await createWeeklyStrategySchedule(userId, strategyId, {
+    startDate: requestedStart,
+    days: 7,
   });
+
+  const tasks = await prisma.strategyArticleTask.findMany({
+    where: {
+      strategyId,
+      scheduledAt: {
+        gte: new Date(plan.windowStart),
+        lte: new Date(plan.windowEnd),
+      },
+      articleId: null,
+      status: { in: [StrategyArticleTaskStatus.PLANNED, StrategyArticleTaskStatus.FAILED] },
+    },
+    orderBy: { scheduledAt: "asc" },
+  });
+
+  let titled = 0;
+  let failed = 0;
+
+  for (const task of tasks) {
+    if (task.title && task.brief && task.status === StrategyArticleTaskStatus.PLANNED) {
+      titled += 1;
+      continue;
+    }
+
+    try {
+      const brief = await generateTaskBrief(strategy, task);
+      await prisma.strategyArticleTask.update({
+        where: { id: task.id },
+        data: {
+          title: brief.title || brief.topic,
+          topic: brief.topic,
+          contentFormat: brief.contentFormat,
+          tone: brief.tone,
+          mainThesis: brief.mainThesis,
+          brief: brief as Prisma.InputJsonValue,
+          status: StrategyArticleTaskStatus.PLANNED,
+          error: null,
+          weekKey: plan.weekKey,
+          generationBatchId: plan.generationBatchId,
+        },
+      });
+      titled += 1;
+    } catch (error) {
+      failed += 1;
+      await prisma.strategyArticleTask.update({
+        where: { id: task.id },
+        data: {
+          status: StrategyArticleTaskStatus.FAILED,
+          error: error instanceof Error ? error.message : "Не удалось создать тему статьи.",
+          weekKey: plan.weekKey,
+          generationBatchId: plan.generationBatchId,
+        },
+      });
+    }
+  }
+
+  return { ...plan, titled, failed, horizonDays: 7 };
 }
 
 export async function buildArticleUniquenessContext(
   strategyId: string,
   brandId: string,
   platform: string,
+  options: {
+    currentTaskId?: string;
+    scheduledAt?: Date;
+    weekKey?: string | null;
+  } = {},
 ) {
+  const weekWindow = options.scheduledAt
+    ? buildWeekWindow(options.scheduledAt)
+    : buildWeekWindow();
+  const weeklyTasks = await prisma.strategyArticleTask.findMany({
+    where: {
+      strategyId,
+      brandId,
+      ...(options.currentTaskId ? { id: { not: options.currentTaskId } } : {}),
+      OR: [
+        ...(options.weekKey ? [{ weekKey: options.weekKey }] : []),
+        { scheduledAt: { gte: weekWindow.start, lte: weekWindow.end } },
+      ],
+    },
+    select: {
+      platform: true,
+      topic: true,
+      title: true,
+      contentFormat: true,
+      tone: true,
+      mainThesis: true,
+      brief: true,
+      article: {
+        select: {
+          title: true,
+          canonicalBody: true,
+          generationMeta: true,
+        },
+      },
+    },
+    orderBy: { scheduledAt: "asc" },
+    take: 120,
+  });
   const recentTasks = await prisma.strategyArticleTask.findMany({
     where: {
       strategyId,
       brandId,
       platform,
+      ...(options.currentTaskId ? { id: { not: options.currentTaskId } } : {}),
       OR: [{ topic: { not: null } }, { title: { not: null } }, { brief: { not: Prisma.JsonNull } }],
     },
     select: {
@@ -722,8 +877,12 @@ export async function buildArticleUniquenessContext(
   const angles = new Set<string>();
   const formats = new Set<string>();
   const theses = new Set<string>();
+  const pains = new Set<string>();
+  const intents = new Set<string>();
+  const ctaBridges = new Set<string>();
+  const structures = new Set<string>();
 
-  for (const task of recentTasks) {
+  for (const task of [...weeklyTasks, ...recentTasks]) {
     const brief = task.brief && typeof task.brief === "object" && !Array.isArray(task.brief)
       ? (task.brief as Record<string, unknown>)
       : {};
@@ -732,23 +891,39 @@ export async function buildArticleUniquenessContext(
     const format = task.contentFormat ?? (typeof brief.contentFormat === "string" ? brief.contentFormat : null);
     const thesis = task.mainThesis ?? (typeof brief.mainThesis === "string" ? brief.mainThesis : null);
     const angle = typeof brief.angle === "string" ? brief.angle : null;
+    const pain = typeof brief.readerPain === "string" ? brief.readerPain : null;
+    const intent = typeof brief.searchIntent === "string" ? brief.searchIntent : null;
+    const ctaBridge = typeof brief.ctaBridge === "string" ? brief.ctaBridge : null;
+    const outline = Array.isArray(brief.outline)
+      ? brief.outline.filter((item): item is string => typeof item === "string").join(" → ")
+      : null;
 
     if (title) titles.add(title);
     if (topic) topics.add(topic);
     if (angle) angles.add(angle);
     if (format) formats.add(format);
     if (thesis) theses.add(thesis);
+    if (pain) pains.add(pain);
+    if (intent) intents.add(intent);
+    if (ctaBridge) ctaBridges.add(ctaBridge);
+    if (outline) structures.add(outline);
   }
 
   const recentTitles = Array.from(titles).slice(0, 30);
   const recentTopics = Array.from(topics).slice(0, 30);
 
   return {
+    weeklyTitles: weeklyTasks.map((task) => task.title ?? task.article?.title).filter(Boolean).slice(0, 80),
+    weeklyTopics: weeklyTasks.map((task) => task.topic).filter(Boolean).slice(0, 80),
     recentTitles,
     recentTopics,
     recentAngles: Array.from(angles).slice(0, 30),
     recentFormats: Array.from(formats).slice(0, 20),
     recentTheses: Array.from(theses).slice(0, 30),
+    recentPains: Array.from(pains).slice(0, 30),
+    recentIntents: Array.from(intents).slice(0, 30),
+    recentCtaBridges: Array.from(ctaBridges).slice(0, 30),
+    recentStructures: Array.from(structures).slice(0, 30),
     forbiddenRepeats: [...recentTitles.slice(0, 12), ...recentTopics.slice(0, 12)],
   };
 }
@@ -766,6 +941,130 @@ export function groupStrategyTasksByPlatformAndDay<
     acc[platform][day] = [...(acc[platform][day] ?? []), task];
     return acc;
   }, {});
+}
+
+function normalizeComparableText(value?: string | null) {
+  return (value ?? "")
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function comparableTokens(value?: string | null) {
+  return normalizeComparableText(value)
+    .split(" ")
+    .filter((token) => token.length > 3);
+}
+
+function jaccardSimilarity(left?: string | null, right?: string | null) {
+  const leftTokens = new Set(comparableTokens(left));
+  const rightTokens = new Set(comparableTokens(right));
+
+  if (!leftTokens.size || !rightTokens.size) {
+    return 0;
+  }
+
+  const intersection = Array.from(leftTokens).filter((token) => rightTokens.has(token)).length;
+  const union = new Set([...leftTokens, ...rightTokens]).size;
+  return intersection / union;
+}
+
+function getIntro(content?: string | null) {
+  return (content ?? "")
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .find((part) => part.length > 40) ?? "";
+}
+
+function getCtaTail(content?: string | null) {
+  return (content ?? "").slice(-700);
+}
+
+function getStructureSignature(content?: string | null) {
+  const headings = (content ?? "")
+    .split("\n")
+    .map((line) => line.replace(/^#+\s*/, "").trim())
+    .filter((line) => line.length > 4 && line.length < 120)
+    .slice(0, 6);
+
+  return headings.length >= 3 ? headings.join(" | ") : "";
+}
+
+async function validateWeeklyArticleUniqueness(
+  strategyId: string,
+  taskId: string,
+  article: { title: string; canonicalBody: string },
+  scheduledAt: Date,
+  weekKey?: string | null,
+) {
+  const { start, end } = buildWeekWindow(scheduledAt);
+  const peers = await prisma.strategyArticleTask.findMany({
+    where: {
+      strategyId,
+      id: { not: taskId },
+      AND: [
+        {
+          OR: [
+            ...(weekKey ? [{ weekKey }] : []),
+            { scheduledAt: { gte: start, lte: end } },
+          ],
+        },
+        { OR: [{ title: { not: null } }, { articleId: { not: null } }] },
+      ],
+    },
+    select: {
+      id: true,
+      title: true,
+      topic: true,
+      article: {
+        select: {
+          title: true,
+          canonicalBody: true,
+        },
+      },
+    },
+    take: 120,
+  });
+
+  const currentIntro = getIntro(article.canonicalBody);
+  const currentCta = getCtaTail(article.canonicalBody);
+  const currentStructure = getStructureSignature(article.canonicalBody);
+
+  for (const peer of peers) {
+    const peerTitle = peer.article?.title ?? peer.title ?? peer.topic;
+    const peerBody = peer.article?.canonicalBody ?? "";
+    const titleSimilarity = jaccardSimilarity(article.title, peerTitle);
+    const introSimilarity = jaccardSimilarity(currentIntro, getIntro(peerBody));
+    const ctaSimilarity = jaccardSimilarity(currentCta, getCtaTail(peerBody));
+    const structureSimilarity = currentStructure
+      ? jaccardSimilarity(currentStructure, getStructureSignature(peerBody))
+      : 0;
+
+    if (normalizeComparableText(article.title) === normalizeComparableText(peerTitle)) {
+      return "Заголовок дублирует другую статью этой недели.";
+    }
+
+    if (titleSimilarity >= 0.72) {
+      return "Заголовок слишком похож на другую статью этой недели.";
+    }
+
+    if (introSimilarity >= 0.78) {
+      return "Вступление слишком похоже на другую статью этой недели.";
+    }
+
+    if (ctaSimilarity >= 0.82) {
+      return "CTA-подводка слишком похожа на другую статью этой недели.";
+    }
+
+    if (structureSimilarity >= 0.86) {
+      return "Структура статьи повторяет другую статью этой недели.";
+    }
+  }
+
+  return null;
 }
 
 export async function generateStrategyArticleTask(
@@ -797,6 +1096,11 @@ async function generateTaskBrief(
     strategy.id,
     strategy.brandId,
     task.platform,
+    {
+      currentTaskId: task.id,
+      scheduledAt: task.scheduledAt,
+      weekKey: "weekKey" in task && typeof task.weekKey === "string" ? task.weekKey : null,
+    },
   );
 
   const format =
@@ -852,11 +1156,12 @@ ${JSON.stringify(
 )}
 
 Правила:
-- тема не должна повторять уже созданные темы и заголовки;
-- не повторяй recentTitles, recentTopics, recentAngles и recentTheses из uniqueness;
+- тема и заголовок не должны повторять уже созданные темы и заголовки этой недели;
+- не повторяй weeklyTitles, weeklyTopics, recentTitles, recentTopics, recentAngles, recentPains, recentIntents, recentCtaBridges и recentStructures из uniqueness;
 - если тема похожа на прошлую — измени угол подачи, формат, тезис или аудиторию;
-- чередуй боль, формат и угол подачи;
+- чередуй боль клиента, поисковый интент, структуру, пример, CTA-подводку, формат и угол подачи;
 - не ставь один и тот же contentFormat слишком часто подряд;
+- title должен быть готовым рабочим заголовком статьи, а topic — короткой темой;
 - brief должен подходить для normalizeArticleBrief → strategy → draft → polish → qualityCheck;
 - не добавляй Medium, Habr, Spark, Rusbase, Cossa, RBK;
 - contentFormat выбери из: ${contentFormats.join(", ")};
@@ -864,12 +1169,17 @@ ${JSON.stringify(
 
 Верни JSON:
 {
+  "title": "...",
   "topic": "...",
   "keyword": "...",
   "targetAudience": "...",
   "readerPain": "...",
   "mainThesis": "...",
   "factsExample": "...",
+  "angle": "...",
+  "searchIntent": "...",
+  "ctaBridge": "...",
+  "outline": ["...", "...", "..."],
   "contentFormat": "${format}",
   "tone": "${tone}"
 }`,
@@ -921,6 +1231,7 @@ async function generateSingleStrategyTask(
     data: {
       brief: brief as Prisma.InputJsonValue,
       topic: brief.topic,
+      title: brief.title || brief.topic,
       contentFormat: brief.contentFormat,
       tone: brief.tone,
       mainThesis: brief.mainThesis,
@@ -938,11 +1249,17 @@ async function generateSingleStrategyTask(
   };
 
   const asset = await createDistributionAsset(userId, {
-    title: brief.topic,
+    title: brief.title || brief.topic,
     canonicalBody: "Черновик будет сгенерирован автопилотом.",
     brandId: strategy.brandId,
     platformId: platform.id,
-    summary: brief.factsExample,
+    summary: [
+      brief.factsExample,
+      brief.angle ? `Угол подачи: ${brief.angle}` : null,
+      brief.searchIntent ? `Поисковый интент: ${brief.searchIntent}` : null,
+      brief.ctaBridge ? `CTA-подводка: ${brief.ctaBridge}` : null,
+      brief.outline.length ? `Структура недели: ${brief.outline.join(" → ")}` : null,
+    ].filter(Boolean).join("\n"),
     primaryKeyword: brief.keyword,
     ctaText: strategy.cta ?? strategy.brand.primaryCta ?? "",
     ctaUrl: strategy.link ?? strategy.brand.siteUrl,
@@ -958,6 +1275,38 @@ async function generateSingleStrategyTask(
   });
 
   const article = await generateArticleForUser(userId, asset.id);
+  const uniquenessError = await validateWeeklyArticleUniqueness(
+    strategy.id,
+    task.id,
+    {
+      title: article.title,
+      canonicalBody: article.canonicalBody,
+    },
+    task.scheduledAt,
+    task.weekKey,
+  );
+
+  if (uniquenessError) {
+    await prisma.articleAsset.update({
+      where: { id: article.id },
+      data: { status: AssetStatus.ARCHIVED },
+    });
+    await prisma.strategyArticleTask.update({
+      where: { id: task.id },
+      data: {
+        articleId: null,
+        status: StrategyArticleTaskStatus.FAILED,
+        error: `${uniquenessError} Нажмите «Перегенерировать».`,
+      },
+    });
+
+    throw new StrategyServiceError(
+      409,
+      "WEEKLY_ARTICLE_TOO_SIMILAR",
+      uniquenessError,
+    );
+  }
+
   await prisma.strategyArticleTask.update({
     where: { id: task.id },
     data: {
@@ -1054,16 +1403,55 @@ export async function generateNextStrategyArticles(
 }
 
 export async function generateWeekArticles(userId: string, strategyId: string) {
-  const plan = await createWeeklyStrategySchedule(userId, strategyId, {
-    startDate: new Date(),
-    days: 7,
+  const strategy = await ensureStrategyAccess(userId, strategyId);
+  const { start, end } = buildWeekWindow(
+    strategy.startDate > new Date() ? strategy.startDate : new Date(),
+  );
+  const tasks = await prisma.strategyArticleTask.findMany({
+    where: {
+      strategyId,
+      scheduledAt: { gte: start, lte: end },
+      articleId: null,
+      status: { in: [StrategyArticleTaskStatus.PLANNED, StrategyArticleTaskStatus.BRIEF_GENERATED] },
+    },
+    orderBy: { scheduledAt: "asc" },
+    take: 5,
   });
-  const generation = await generateNextStrategyArticles(userId, strategyId, 24 * 7, 100);
+
+  let generated = 0;
+  let failed = 0;
+
+  for (const task of tasks) {
+    try {
+      await generateSingleStrategyTask(userId, strategy, task);
+      generated += 1;
+    } catch (error) {
+      failed += 1;
+      await prisma.strategyArticleTask.update({
+        where: { id: task.id },
+        data: {
+          status: StrategyArticleTaskStatus.FAILED,
+          error: error instanceof Error ? error.message : "Не удалось сгенерировать статью.",
+        },
+      });
+    }
+  }
+  const remaining = await prisma.strategyArticleTask.count({
+    where: {
+      strategyId,
+      scheduledAt: { gte: start, lte: end },
+      articleId: null,
+      status: { in: [StrategyArticleTaskStatus.PLANNED, StrategyArticleTaskStatus.BRIEF_GENERATED] },
+    },
+  });
 
   return {
-    ...plan,
-    ...generation,
+    processed: tasks.length,
+    generated,
+    failed,
     horizonDays: 7,
+    batchSize: 5,
+    remaining,
   };
 }
 
@@ -1649,6 +2037,8 @@ function mapStrategy(strategy: {
     contentFormat?: string | null;
     tone?: string | null;
     mainThesis?: string | null;
+    weekKey?: string | null;
+    generationBatchId?: string | null;
     error?: string | null;
     articleId?: string | null;
     attempts?: number;
@@ -1708,6 +2098,8 @@ function mapStrategy(strategy: {
       contentFormat: task.contentFormat ?? null,
       tone: task.tone ?? null,
       mainThesis: task.mainThesis ?? null,
+      weekKey: task.weekKey ?? null,
+      generationBatchId: task.generationBatchId ?? null,
       articleId: task.articleId ?? null,
       error: task.error ?? null,
       attempts: task.attempts ?? 0,

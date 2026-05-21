@@ -403,23 +403,25 @@ model ContentStrategy {
 }
 
 model StrategyArticleTask {
-  id            String                    @id @default(cuid())
-  strategyId    String
-  brandId       String
-  articleId     String?
-  platform      String                    @db.VarChar(32)
-  scheduledAt   DateTime
-  status        StrategyArticleTaskStatus @default(PLANNED)
-  topic         String?                   @db.VarChar(240)
-  title         String?                   @db.VarChar(240)
-  contentFormat String?                   @db.VarChar(64)
-  tone          String?                   @db.VarChar(64)
-  mainThesis    String?                   @db.Text
-  brief         Json?
-  error         String?                   @db.Text
-  attempts      Int                       @default(0)
-  createdAt     DateTime                  @default(now())
-  updatedAt     DateTime                  @updatedAt
+  id                String                    @id @default(cuid())
+  strategyId        String
+  brandId           String
+  articleId         String?
+  platform          String                    @db.VarChar(32)
+  scheduledAt       DateTime
+  status            StrategyArticleTaskStatus @default(PLANNED)
+  topic             String?                   @db.VarChar(240)
+  title             String?                   @db.VarChar(240)
+  contentFormat     String?                   @db.VarChar(64)
+  tone              String?                   @db.VarChar(64)
+  mainThesis        String?                   @db.Text
+  brief             Json?
+  weekKey           String?                   @db.VarChar(16)
+  generationBatchId String?                   @db.VarChar(80)
+  error             String?                   @db.Text
+  attempts          Int                       @default(0)
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
 
   strategy ContentStrategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
   brand    Brand           @relation(fields: [brandId], references: [id], onDelete: Cascade)
@@ -427,6 +429,8 @@ model StrategyArticleTask {
 
   @@unique([strategyId, platform, scheduledAt])
   @@index([strategyId, status, scheduledAt])
+  @@index([strategyId, weekKey])
+  @@index([generationBatchId])
   @@index([brandId, status, scheduledAt])
   @@index([articleId])
 }

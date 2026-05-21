@@ -18,7 +18,10 @@ import {
   getPlatformConfig,
   type PlatformSlug,
 } from "@/infrastructure/platforms/platform-registry";
-import { formatArticleForPlatform } from "@/services/article-formatting";
+import {
+  cleanupGeneratedArticleContent,
+  formatArticleForPlatform,
+} from "@/services/article-formatting";
 
 const TOKEN_PREFIX = "fp_agent_";
 const PAIRING_TTL_MINUTES = 15;
@@ -930,6 +933,12 @@ export async function createPublishArticleJob({
           id: true,
         },
       },
+      brand: {
+        select: {
+          name: true,
+          siteUrl: true,
+        },
+      },
     },
   });
 
@@ -1068,7 +1077,14 @@ export async function createPublishArticleJob({
     };
   }
 
-  const body = formatArticleForPlatform(article.canonicalBody, config.slug);
+  const cleanedBody = cleanupGeneratedArticleContent(article.canonicalBody, {
+    ctaText: article.ctaText,
+    ctaUrl: article.ctaUrl,
+    brandName: article.brand.name,
+    brandUrl: article.brand.siteUrl,
+    productBlockEnabled: true,
+  });
+  const body = formatArticleForPlatform(cleanedBody, config.slug);
   const publishPayload = {
     articleId: article.id,
     publicationId: publication.id,

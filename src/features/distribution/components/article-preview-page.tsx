@@ -56,7 +56,45 @@ function cleanLine(line: string) {
   return line.trim().replace(/^#{1,3}\s+/, "").replace(/^[-*]\s+/, "");
 }
 
-function renderArticleContent(content: string) {
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function renderLinkedText(
+  text: string,
+  options: { ctaText?: string | null; ctaUrl?: string | null; brandUrl?: string | null },
+) {
+  const ctaText = options.ctaText?.trim();
+  const href = options.ctaUrl?.trim() || options.brandUrl?.trim();
+
+  if (!ctaText || !href || !text.toLowerCase().includes(ctaText.toLowerCase())) {
+    return text;
+  }
+
+  const pattern = new RegExp(`(${escapeRegExp(ctaText)})`, "gi");
+  const parts = text.split(pattern);
+
+  return parts.map((part, index) => {
+    if (part.toLowerCase() !== ctaText.toLowerCase()) {
+      return part;
+    }
+
+    return (
+      <a
+        key={`${part}-${index}`}
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="font-medium text-primary underline underline-offset-4"
+      >
+        {part}
+      </a>
+    );
+  });
+}
+
+function renderArticleContent(asset: DistributionAssetListItem) {
+  const content = asset.canonicalBody;
   const lines = content
     .split(/\n+/)
     .map((line) => line.trim())
@@ -81,7 +119,7 @@ function renderArticleContent(content: string) {
     nodes.push(
       <ul key={`list-${index}`} className="my-6 list-disc space-y-2 pl-6">
         {listItems.map((item, itemIndex) => (
-          <li key={`${item}-${itemIndex}`}>{item}</li>
+          <li key={`${item}-${itemIndex}`}>{renderLinkedText(item, asset)}</li>
         ))}
       </ul>,
     );
@@ -112,7 +150,7 @@ function renderArticleContent(content: string) {
 
     nodes.push(
       <p key={`${line}-${index}`} className="my-5">
-        {line}
+        {renderLinkedText(line, asset)}
       </p>,
     );
   });
@@ -178,7 +216,7 @@ export function ArticlePreviewPage({ asset }: ArticlePreviewPageProps) {
               ) : null}
             </header>
 
-            {renderArticleContent(asset.canonicalBody)}
+            {renderArticleContent(asset)}
           </article>
         </CardContent>
       </Card>

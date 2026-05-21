@@ -57,6 +57,7 @@ export type DistributionAssetListItem = {
   brandId: string;
   brandName: string;
   brandDomain: string;
+  brandUrl: string;
   platformId: string;
   platformName: string;
   platformSlug: string;

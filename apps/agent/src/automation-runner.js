@@ -534,13 +534,8 @@ function createAutomationRunner({ app, sendState, logJob }) {
     const payload = validatePublishPayload(job);
     const platform = normalizePlatform(job.platform || job.payload?.platform);
     const title = payload.title;
-    const body = [
-      payload.content,
-      payload.ctaText,
-      payload.ctaUrl,
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    const body = sanitizePublishBody(payload.content, payload);
+    assertNoUnsafeLinkText(body, platform);
 
     const headless = shouldRunHeadless(job);
     const visibleDebugMode = isDebugVisiblePublish(job, headless);
@@ -914,6 +909,201 @@ function createAutomationRunner({ app, sendState, logJob }) {
     }).catch(() => undefined);
   }
 
+  const markdownLinkPattern = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gi;
+  const bareUrlPattern = /https?:\/\/[^\s)]+/gi;
+  const standaloneUrlPattern = /^https?:\/\/\S+$/i;
+  const junkCtaLinePattern =
+    /^(покупка услуг|покупка|услуги|купить|заказать|перейти по ссылке|переходите по ссылке|ссылка ниже|ссылка:?|cta:?|call to action:?|url:?)$/i;
+
+  function normalizeCtaText(payload) {
+    return String(payload.ctaText || "FlowPost").replace(/\s+/g, " ").trim();
+  }
+
+  function productBlock(ctaText) {
+    return `Если вы хотите системно публиковать контент на внешних площадках, можно посмотреть ${ctaText}. Сервис помогает планировать статьи, генерировать тексты и готовить публикации под разные каналы.`;
+  }
+
+  function sanitizePublishBody(content, payload) {
+    const ctaText = normalizeCtaText(payload);
+    const lines = String(content || "")
+      .replace(markdownLinkPattern, "$1")
+      .replace(bareUrlPattern, "")
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n")
+      .split("\n")
+      .map((line) =>
+        line
+          .replace(/\*\*([^*]+)\*\*/g, "$1")
+          .replace(/`([^`]+)`/g, "$1")
+          .trim(),
+      )
+      .filter((line) => {
+        if (!line) return true;
+        return !standaloneUrlPattern.test(line) && !junkCtaLinePattern.test(line);
+      });
+
+    const ctaOnlyPattern = new RegExp(
+      `^${ctaText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+      "i",
+    );
+    while (lines.length > 0) {
+      const last = String(lines[lines.length - 1] || "").trim();
+      if (!last || standaloneUrlPattern.test(last) || junkCtaLinePattern.test(last) || ctaOnlyPattern.test(last)) {
+        lines.pop();
+        continue;
+      }
+      break;
+    }
+
+    const text = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    const hasCta = ctaText && text.toLowerCase().includes(ctaText.toLowerCase());
+
+    return [text, hasCta ? null : productBlock(ctaText)]
+      .filter(Boolean)
+      .join("\n\n")
+      .trim();
+  }
+
+  function assertNoUnsafeLinkText(text, platform) {
+    const unsafePatterns = [
+      markdownLinkPattern,
+      standaloneUrlPattern,
+      /(^|\n)\s*https?:\/\/\S+/i,
+      /покупка услуг|(^|\n)\s*(покупка|услуги|купить|заказать|ссылка ниже|переходите по ссылке|cta)\s*($|\n)/i,
+    ];
+    const matched = unsafePatterns.some((pattern) => {
+      pattern.lastIndex = 0;
+      return pattern.test(text);
+    });
+
+    if (matched) {
+      const code = platform === "dzen" ? "DZEN_UNSAFE_LINK_TEXT" : "VC_UNSAFE_LINK_TEXT";
+      throw automationError(
+        code,
+        "В тексте публикации найдена голая ссылка, markdown-ссылка или мусорный CTA. Публикация остановлена.",
+        `Unsafe link text detected for ${platform}.`,
+        "validate article links",
+      );
+    }
+  }
+
+  async function selectTextInEditable(locator, text) {
+    return locator.evaluate((root, targetText) => {
+      const needle = String(targetText || "").trim();
+      if (!needle) return false;
+
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+
+      while (node) {
+        const value = node.nodeValue || "";
+        const index = value.toLowerCase().indexOf(needle.toLowerCase());
+        if (index >= 0) {
+          const range = document.createRange();
+          range.setStart(node, index);
+          range.setEnd(node, index + needle.length);
+          const selection = window.getSelection();
+          selection?.removeAllRanges();
+          selection?.addRange(range);
+          return true;
+        }
+        node = walker.nextNode();
+      }
+
+      return false;
+    }, text);
+  }
+
+  async function addLinkToEditorText(page, editorLocator, payload, platform) {
+    const text = normalizeCtaText(payload);
+    const url = String(payload.ctaUrl || "").trim();
+
+    if (!url) {
+      return false;
+    }
+
+    const selected = await selectTextInEditable(editorLocator, text).catch(() => false);
+    if (!selected) {
+      throw automationError(
+        platform === "dzen" ? "DZEN_CTA_TEXT_NOT_FOUND" : "VC_CTA_TEXT_NOT_FOUND",
+        `Не удалось найти текст ${text} в редакторе для добавления ссылки.`,
+        `CTA text "${text}" was not found in ${platform} editor.`,
+        "add editor link",
+      );
+    }
+
+    const modifier = process.platform === "darwin" ? "Meta" : "Control";
+    await page.keyboard.press(`${modifier}+K`);
+    await humanDelay(400, 900);
+
+    const linkField = await findFirstVisible(
+      [
+        { locator: page.locator('input[type="url"]'), timeout: 2500 },
+        { locator: page.getByPlaceholder(/url|https|ссыл/i), timeout: 2500 },
+        { locator: page.getByRole("textbox", { name: /url|ссыл|link/i }), timeout: 2500 },
+        { locator: page.locator('input[aria-label*="ссыл" i], input[aria-label*="url" i], input[placeholder*="ссыл" i], input[placeholder*="url" i]'), timeout: 2500 },
+      ],
+      platform === "dzen" ? "DZEN_LINK_FIELD_NOT_FOUND" : "VC_LINK_FIELD_NOT_FOUND",
+      `Не удалось открыть поле ссылки для ${text}.`,
+      "add editor link",
+    );
+    await pasteText(page, url, linkField);
+    await page.keyboard.press("Enter");
+    await humanDelay(700, 1300);
+
+    const linked = await editorLocator.evaluate(
+      (root, args) => {
+        const anchors = Array.from(root.querySelectorAll("a"));
+        return anchors.some((anchor) => {
+          const label = (anchor.textContent || "").trim().toLowerCase();
+          const href = String(anchor.getAttribute("href") || anchor.href || "");
+          return label.includes(args.text.toLowerCase()) && href.includes(args.url);
+        });
+      },
+      { text, url },
+    ).catch(() => false);
+
+    if (!linked) {
+      throw automationError(
+        platform === "dzen" ? "DZEN_LINK_NOT_APPLIED" : "VC_LINK_NOT_APPLIED",
+        `Не удалось добавить кликабельную ссылку ${text} в редактор ${platform === "dzen" ? "Dzen" : "VC.ru"}.`,
+        `Clickable link was not found in ${platform} editor after link insertion.`,
+        "add editor link",
+      );
+    }
+
+    return true;
+  }
+
+  async function validateEditorBeforePublish(page, editorLocator, payload, platform) {
+    const text = await editorLocator.innerText({ timeout: 5000 }).catch(() => "");
+    assertNoUnsafeLinkText(text, platform);
+
+    const url = String(payload.ctaUrl || "").trim();
+    const ctaText = normalizeCtaText(payload);
+    if (!url) {
+      return;
+    }
+
+    const linked = await editorLocator.evaluate(
+      (root, args) => Array.from(root.querySelectorAll("a")).some((anchor) => {
+        const label = (anchor.textContent || "").trim().toLowerCase();
+        const href = String(anchor.getAttribute("href") || anchor.href || "");
+        return label.includes(args.text.toLowerCase()) && href.includes(args.url);
+      }),
+      { text: ctaText, url },
+    ).catch(() => false);
+
+    if (!linked) {
+      throw automationError(
+        platform === "dzen" ? "DZEN_LINK_NOT_APPLIED" : "VC_LINK_NOT_APPLIED",
+        `Не удалось добавить кликабельную ссылку ${ctaText} в редактор ${platform === "dzen" ? "Dzen" : "VC.ru"}.`,
+        `Missing clickable ${ctaText} link before ${platform} publish.`,
+        "validate article links",
+      );
+    }
+  }
+
   async function findFirstVisible(candidates, errorCode, message, step) {
     for (const candidate of candidates) {
       try {
@@ -1274,6 +1464,10 @@ function createAutomationRunner({ app, sendState, logJob }) {
     await logStep("dzen", "paste body");
     await pasteText(page, payload.body, bodyField);
     await logStep("dzen", "body pasted");
+    await logStep("dzen", "add cta link");
+    await addLinkToEditorText(page, bodyField, payload, "dzen");
+    await validateEditorBeforePublish(page, bodyField, payload, "dzen");
+    await logStep("dzen", "cta link validated");
     await waitForAutosave(page, "dzen");
     await detectCaptcha(page, "dzen", "wait autosave");
 
@@ -1392,6 +1586,17 @@ function createAutomationRunner({ app, sendState, logJob }) {
     await logStep("vc", "paste body");
     await pasteText(page, payload.body);
     await logStep("vc", "body pasted");
+    await logStep("vc", "add cta link");
+    const vcBodyField = (await page
+      .locator('[contenteditable="true"]:focus, [role="textbox"]:focus, textarea:focus')
+      .first()
+      .isVisible({ timeout: 1000 })
+      .catch(() => false))
+      ? page.locator('[contenteditable="true"]:focus, [role="textbox"]:focus, textarea:focus').first()
+      : titleField;
+    await addLinkToEditorText(page, vcBodyField, payload, "vc");
+    await validateEditorBeforePublish(page, vcBodyField, payload, "vc");
+    await logStep("vc", "cta link validated");
     await waitForAutosave(page, "vc");
     await detectCaptcha(page, "vc", "wait autosave");
 

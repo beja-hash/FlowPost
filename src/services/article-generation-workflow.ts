@@ -204,6 +204,13 @@ async function generateArticleForUserOnce(userId: string, articleId: string) {
           detectedIssues: generated.polished.detectedIssues,
           platformFit: generated.polished.platformFit,
           qualityReport: generated.qualityReport,
+          contentStorageFormat: "plain_text_with_cta_text",
+          productBlockEnabled: true,
+          linkHandling: {
+            bodyContainsUrl: false,
+            ctaText: article.ctaText,
+            ctaUrl: article.ctaUrl,
+          },
           inputTokens: generated.usage.inputTokens,
           outputTokens: generated.usage.outputTokens,
           totalTokens: generated.usage.totalTokens,

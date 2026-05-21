@@ -3,7 +3,10 @@ import type { ArticleAsset, Brand, TopicIntent } from "@prisma/client";
 import type { ArticleContentBrief } from "@/features/distribution/types";
 import type { LlmUsage } from "@/lib/llm";
 import { generateText } from "@/lib/llm";
-import { hasUnsafeDzenMarkdown } from "@/services/article-formatting";
+import {
+  cleanupGeneratedArticleContent,
+  hasUnsafeDzenMarkdown,
+} from "@/services/article-formatting";
 
 export type ArticleContentFormat =
   | "case_story"
@@ -696,6 +699,8 @@ export async function generateArticleDraft(
   brief = normalizeArticleBrief(input),
 ): Promise<{ draft: ArticleDraft; usage: LlmUsage }> {
   const productLink = input.article.ctaUrl ?? input.brand.siteUrl;
+  const productCta =
+    input.article.ctaText?.trim() || input.brand.name?.trim() || "FlowPost";
   const result = await generateText([
     {
       role: "system",
@@ -722,6 +727,8 @@ ${JSON.stringify({ ...brief, brand: undefined }, null, 2)}
 
 Единственная разрешенная ссылка:
 ${productLink ?? "не указана"}
+Текст CTA, который можно упоминать в body без URL:
+${productCta}
 
 Выход:
 {
@@ -751,8 +758,11 @@ ${productLink ?? "не указана"}
 - не перегружай SEO-ключами;
 - не продавай в каждом блоке;
 - продукт упомяни ближе к концу;
-- в конце сделай отдельный аккуратный product block: что это за продукт, какие боли закрывает, кому подходит, мягкий CTA;
-- если link передан, используй его один раз в product block;
+- в конце можно упомянуть только текст CTA "${productCta}", без URL и без markdown-ссылки;
+- не вставляй link в body: ссылка хранится отдельно в metadata;
+- запрещено писать голые URL, markdown-ссылки вида [${productCta}](https://...), "ссылка ниже", "переходите по ссылке";
+- запрещены мусорные CTA: "покупка услуг", "покупка", "услуги", "купить", "заказать";
+- финальный product block должен быть аккуратным, нативным, без агрессивной продажи и без обещаний результата;
 - не заканчивай словом "купить";
 - markdown разрешен только для подзаголовков и списков, без таблиц.`,
     },
@@ -835,8 +845,11 @@ ${[...qualityIssues, ...previousIssues].length > 0 ? `Проблемы пред�
 - Если нужен пример, пиши: "условный пример", "типичная ситуация", "например", "в такой схеме".
 - Убери любые гарантии: гарантированный рост трафика, гарантированные лиды, гарантированный SEO-эффект, продажи, окупаемость.
 - Правильный смысл: это не гарантия лидов на следующий день, а способ быстрее тестировать темы, получать охваты и строить органический канал, который не зависит только от рекламного бюджета.
-- Финал должен быть короче draft-финала: не повторять статью, честно объяснять продукт, показывать кому подходит, мягко вести к CTA и ссылке.
+- Финал должен быть короче draft-финала: не повторять статью, честно объяснять продукт, показывать кому подходит, мягко вести к CTA без URL в body.
 - Product block: ${productName} помогает запускать регулярную дистрибуцию статей на VC.ru и Дзене: генерировать материалы, адаптировать их под площадки и публиковать без ручной рутины. Это не замена стратегии и не гарантия лидов.
+- В body нельзя вставлять ${productLink}, любые голые URL и markdown-ссылки вида [${productCta}](https://...).
+- В body можно писать только обычный текст CTA: ${productCta}. Ссылка будет добавлена отдельно через metadata и редактор площадки.
+- Запрещены мусорные CTA и финальные строки: "покупка услуг", "покупка", "услуги", "купить", "заказать", "ссылка ниже", "переходите по ссылке", "CTA".
 - Целевая длина всей статьи с product block: ${strategy.targetLength.minChars}-${strategy.targetLength.maxChars} символов, hard max 5000 знаков. Если длиннее — жестко сократи повторы, вступления и корпоративные абзацы.
 - Не расширяй статью ради объема: 3-5 смысловых блоков достаточно.
 - Формат ${strategy.contentFormat} должен быть виден в структуре, а не только указан в metadata.
@@ -983,6 +996,7 @@ ${JSON.stringify(article, null, 2)}
 - overallScore не может быть 8+, если мало конкретики.
 - overallScore не может быть 8+, если текст похож на корпоративный блог.
 - overallScore не может быть 8+, если продукт впаривается.
+- overallScore не может быть 8+, если в body есть голый URL, markdown-ссылка, "покупка услуг", "купить", "заказать", "ссылка ниже" или "переходите по ссылке".
 - overallScore не может быть 8+, если есть выдуманные факты или фальшивые кейсы.
 - overallScore не может быть 8+, если есть Medium, Habr, Spark, Rusbase, Cossa, RBK или другие неподдерживаемые площадки.
 - overallScore не может быть 8+, если статья слишком короткая для targetLength.
@@ -1135,6 +1149,25 @@ export async function generateArticle(
       warnings,
       detectedIssues: [],
       platformFit: strategy.platform,
+    };
+  }
+
+  const cleanedContent = cleanupGeneratedArticleContent(finalArticle.content, {
+    ctaText: input.article.ctaText,
+    ctaUrl: input.article.ctaUrl,
+    brandName: input.brand.name,
+    brandUrl: input.brand.siteUrl,
+    productBlockEnabled: true,
+  });
+  if (cleanedContent !== finalArticle.content) {
+    warnings.push("Article content cleanup removed unsafe links or CTA noise.");
+    finalArticle = {
+      ...finalArticle,
+      content: cleanedContent,
+      changed: [
+        ...finalArticle.changed,
+        "Очищены голые URL, markdown-ссылки и небезопасный CTA.",
+      ],
     };
   }
 
