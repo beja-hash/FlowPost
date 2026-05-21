@@ -143,10 +143,12 @@ export async function generateArticleForUser(
       data: {
         title: generated.title,
         canonicalBody: generated.content,
+        ctaText: generated.ctaText,
+        ctaUrl: generated.ctaUrl,
         generationMeta: {
           provider: "polza",
           model: generated.usage.model,
-          pipeline: ["strategy", "draft", "polish"],
+          pipeline: ["single_llm_article", "cleanup", "product_block"],
           strategy: generated.strategy,
           qualityScore: generated.polished.qualityScore,
           polishChanged: generated.polished.changed,
@@ -158,8 +160,8 @@ export async function generateArticleForUser(
           productBlockEnabled: true,
           linkHandling: {
             bodyContainsUrl: false,
-            ctaText: article.ctaText,
-            ctaUrl: article.ctaUrl,
+            ctaText: generated.ctaText,
+            ctaUrl: generated.ctaUrl,
           },
           inputTokens: generated.usage.inputTokens,
           outputTokens: generated.usage.outputTokens,
@@ -174,6 +176,7 @@ export async function generateArticleForUser(
             data: {
               headline: generated.title,
               body: generated.content,
+              callToAction: generated.ctaText,
               status: VariantStatus.READY,
             },
           },

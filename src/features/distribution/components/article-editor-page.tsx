@@ -94,8 +94,9 @@ function BriefGenerateButton({
 
 const generationMessages = [
   "Генерируем статью...",
-  "Это может занять до 30–60 секунд...",
-  "Пишем компактный черновик...",
+  "Пишем текст одним быстрым запросом...",
+  "Проверяем CTA...",
+  "Очищаем ссылки и мусорный CTA...",
   "Сохраняем результат...",
 ];
 
@@ -574,6 +575,7 @@ export function ArticleEditorPage({
     startTransition(async () => {
       let timer: number | null = null;
       let generatedAssetId: string | null = currentAsset?.id ?? null;
+      const startedAt = performance.now();
 
       try {
         generationInFlightRef.current = true;
@@ -595,11 +597,13 @@ export function ArticleEditorPage({
         const savedAsset = await saveArticle();
         generatedAssetId = savedAsset.id;
         const generationPayload = { articleId: savedAsset.id };
+        console.time("[ArticleGeneration UI] api-request");
         const response = await fetch("/api/articles/generate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(generationPayload),
         });
+        console.timeEnd("[ArticleGeneration UI] api-request");
         const body = await parseGenerationResponse(response);
 
         if (!response.ok) {
@@ -621,6 +625,7 @@ export function ArticleEditorPage({
           console.log("[article-generate-ui] success", {
             assetId: savedAsset.id,
             contentLength: nextAsset.canonicalBody.length,
+            durationMs: Math.round(performance.now() - startedAt),
           });
         }
         router.replace(`/articles/${savedAsset.id}/edit`);
@@ -1153,7 +1158,7 @@ export function ArticleEditorPage({
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
               <div className="grid gap-2">
                 <label className="text-sm font-medium" htmlFor="article-cta">
-                  Призыв к действию
+                  Текст ссылки / продукт
                 </label>
                 <Input
                   id="article-cta"
@@ -1161,7 +1166,7 @@ export function ArticleEditorPage({
                   onChange={(event) =>
                     updateField("ctaText", event.target.value)
                   }
-                  placeholder="Получить консультацию"
+                  placeholder="FlowPostAI"
                 />
               </div>
 

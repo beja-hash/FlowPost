@@ -6,6 +6,7 @@ import { generateText } from "@/lib/llm";
 import {
   cleanupGeneratedArticleContent,
   hasUnsafeDzenMarkdown,
+  resolveArticleCta,
 } from "@/services/article-formatting";
 
 export type ArticleContentFormat =
@@ -160,6 +161,8 @@ export type GeneratedArticle = {
   qualityReport: ArticleQualityReport | null;
   warnings: string[];
   usage: LlmUsage;
+  ctaText: string;
+  ctaUrl: string | null;
 };
 
 export class ArticleGenerationContentError extends Error {
@@ -861,6 +864,76 @@ ${productCta}
   return { draft, usage: result.usage };
 }
 
+async function generateArticleBodyOnce(
+  input: ArticleGenerationInput,
+  strategy: ArticleStrategy,
+  brief: NormalizedArticleBrief,
+): Promise<{ draft: ArticleDraft; usage: LlmUsage }> {
+  const resolvedCta = resolveArticleCta({
+    ctaText: input.article.ctaText,
+    ctaUrl: input.article.ctaUrl,
+    brandName: input.brand.name,
+    brandUrl: input.brand.siteUrl,
+  });
+  const platformName = strategy.platform === "vc" ? "VC.ru" : "Дзен";
+  const format = strategy.contentFormat;
+  const tone = strategy.tone;
+  const promptTimer = `[ArticleGeneration:${brief.topic.slice(0, 40)}] build-prompt`;
+  console.time(promptTimer);
+  const prompt = `Напиши готовый текст статьи.
+
+Верни только текст статьи без JSON, markdown-ссылок, HTML и пояснений.
+
+Тема: ${brief.topic}
+Площадка: ${platformName}
+Формат: ${format}
+Тон: ${tone}
+Ключевой запрос: ${brief.keyword ?? "не указан"}
+Аудитория: ${brief.targetAudience}
+Боль читателя: ${brief.readerPain}
+Главный тезис: ${brief.mainThesis}
+Факты/пример: ${brief.facts ?? "используй только условные примеры без выдуманных метрик"}
+Продукт для мягкого упоминания: ${resolvedCta.ctaText}
+
+Требования:
+- 3200-4500 знаков, 5-7 коротких смысловых блоков;
+- первый абзац начинает с боли, конфликта или конкретной ситуации;
+- без общих начал вроде "в современном мире" и "многие компании сталкиваются";
+- не обещай гарантированный SEO-рост, лиды, продажи или окупаемость;
+- не выдумывай реальные кейсы, клиентов и метрики;
+- для Дзена не используй markdown-разметку;
+- не вставляй product block в конце: он будет добавлен кодом;
+- в body нельзя писать URL, markdown-ссылки, "покупка услуг", "купить", "заказать", "ссылка ниже", "переходите по ссылке";
+- если упоминаешь продукт, пиши только обычный текст "${resolvedCta.ctaText}", без ссылки.`;
+  console.timeEnd(promptTimer);
+
+  const result = await generateText(
+    [
+      {
+        role: "system",
+        content:
+          "Ты пишешь русскоязычные статьи для VC.ru и Дзена как живой практик. Пиши конкретно, без AI-стиля, SEO-воды, фальшивых кейсов и гарантий результата.",
+      },
+      {
+        role: "user",
+        content: prompt,
+      },
+    ],
+    { maxTokens: 2200 },
+  );
+
+  const content = normalizeGeneratedContent(result.text);
+  validateDraft({ title: brief.topic, content });
+
+  return {
+    draft: {
+      title: brief.topic,
+      content,
+    },
+    usage: result.usage,
+  };
+}
+
 export async function polishArticleForPlatform(
   draft: ArticleDraft,
   strategy: ArticleStrategy,
@@ -1133,22 +1206,23 @@ export async function generateArticle(
   input: ArticleGenerationInput,
   options: ArticleGenerationOptions = {},
 ): Promise<GeneratedArticle> {
+  const totalStartedAt = Date.now();
   options.onStep?.("normalize");
   const brief = normalizeArticleBrief(input);
   const warnings: string[] = [];
+  const resolvedCta = resolveArticleCta({
+    ctaText: input.article.ctaText,
+    ctaUrl: input.article.ctaUrl,
+    brandName: input.brand.name,
+    brandUrl: input.brand.siteUrl,
+  });
+  warnings.push(...resolvedCta.warnings);
 
-  options.onStep?.("strategy");
-  devLog("strategy:start");
-  const {
-    strategy,
-    usage: strategyUsage,
-    warnings: strategyWarnings,
-  } = await generateArticleStrategy(
-    input,
+  const strategy = buildFallbackArticleStrategy(
     brief,
+    getTargetLength(brief.platform, brief.contentFormat),
   );
-  warnings.push(...strategyWarnings);
-  devLog("strategy:done", {
+  devLog("strategy:deterministic", {
     platform: strategy.platform,
     format: strategy.contentFormat,
     title: strategy.selectedTitle,
@@ -1156,100 +1230,34 @@ export async function generateArticle(
   });
 
   options.onStep?.("draft");
-  devLog("draft:start");
-  const { draft, usage: draftUsage } = await generateArticleDraft(
+  devLog("draft:start", { mode: "single_llm_request" });
+  const { draft, usage: draftUsage } = await generateArticleBodyOnce(
     input,
     strategy,
     brief,
   );
   devLog("draft:done", { length: draft.content.length });
 
-  let finalArticle: PolishedArticle;
-  let polishUsage: LlmUsage | null = null;
-  let qualityUsage: LlmUsage | null = null;
-  let rewriteUsage: LlmUsage | null = null;
-  let qualityReport: ArticleQualityReport | null = null;
+  let finalArticle: PolishedArticle = {
+    title: draft.title,
+    content: draft.content,
+    qualityScore: 8,
+    changed: ["Сгенерировано быстрым single-request pipeline."],
+    warnings: [],
+    detectedIssues: [],
+    platformFit: strategy.platform,
+  };
 
-  try {
-    options.onStep?.("polish");
-    devLog("polish:start");
-    const polishedResult = await polishArticleForPlatform(draft, strategy, input);
-    finalArticle = polishedResult.polished;
-    polishUsage = polishedResult.usage;
-
-    options.onStep?.("quality_check");
-    const qualityResult = await qualityCheckArticle(finalArticle, strategy, brief);
-    qualityReport = qualityResult.report;
-    qualityUsage = qualityResult.usage;
-    devLog("quality:done", {
-      contentFormat: strategy.contentFormat,
-      tone: strategy.tone,
-      selectedTitle: strategy.selectedTitle,
-      targetLength: strategy.targetLength,
-      actualArticleLength: getActualLength(finalArticle),
-      qualityScore: qualityReport.overallScore,
-      lengthFit: qualityReport.lengthFit,
-      detectedIssues: qualityReport.detectedIssues,
-      warnings: qualityReport.warnings,
-      rewriteTriggered: qualityReport.rewriteRequired,
-    });
-
-    if (qualityReport.rewriteRequired || qualityReport.overallScore < 8) {
-      options.onStep?.("rewrite");
-      const rewriteResult = await polishArticleForPlatform(
-        {
-          title: finalArticle.title,
-          content: finalArticle.content,
-        },
-        strategy,
-        input,
-        [
-          ...qualityReport.detectedIssues,
-          ...qualityReport.warnings,
-          `overallScore: ${qualityReport.overallScore}`,
-          `targetLength: ${strategy.targetLength.minChars}-${strategy.targetLength.maxChars}`,
-        ],
-      );
-      finalArticle = rewriteResult.polished;
-      rewriteUsage = rewriteResult.usage;
-
-      const secondQuality = await qualityCheckArticle(finalArticle, strategy, brief);
-      qualityReport = secondQuality.report;
-      qualityUsage = qualityUsage
-        ? mergeUsage(qualityUsage, secondQuality.usage)
-        : secondQuality.usage;
-    }
-
-    warnings.push(...finalArticle.warnings);
-    warnings.push(...(qualityReport?.warnings ?? []));
-    devLog("polish:done", {
-      qualityScore: finalArticle.qualityScore,
-      length: finalArticle.content.length,
-    });
-  } catch (error) {
-    options.onStep?.("polish_fallback");
-    const message =
-      error instanceof Error ? error.message : "Polish stage failed.";
-    warnings.push(`Polish fallback: ${message}`);
-    devLog("polish:fallback", { error: message });
-    finalArticle = {
-      title: draft.title,
-      content: draft.content,
-      qualityScore: 7,
-      changed: [],
-      warnings,
-      detectedIssues: [],
-      platformFit: strategy.platform,
-    };
-  }
-
+  const cleanupTimer = `[ArticleGeneration:${brief.topic.slice(0, 40)}] cleanup`;
+  console.time(cleanupTimer);
   const cleanedContent = cleanupGeneratedArticleContent(finalArticle.content, {
-    ctaText: input.article.ctaText,
-    ctaUrl: input.article.ctaUrl,
+    ctaText: resolvedCta.ctaText,
+    ctaUrl: resolvedCta.ctaUrl,
     brandName: input.brand.name,
     brandUrl: input.brand.siteUrl,
     productBlockEnabled: true,
   });
+  console.timeEnd(cleanupTimer);
   if (cleanedContent !== finalArticle.content) {
     warnings.push("Article content cleanup removed unsafe links or CTA noise.");
     finalArticle = {
@@ -1261,6 +1269,13 @@ export async function generateArticle(
       ],
     };
   }
+  finalArticle.warnings = warnings;
+
+  devLog("generate:done", {
+    mode: "fast_single_request",
+    durationMs: Date.now() - totalStartedAt,
+    contentLength: finalArticle.content.length,
+  });
 
   return {
     title: finalArticle.title,
@@ -1269,14 +1284,10 @@ export async function generateArticle(
     strategy,
     draft,
     polished: finalArticle,
-    qualityReport,
+    qualityReport: null,
     warnings,
-    usage: mergeUsage(
-      strategyUsage,
-      draftUsage,
-      ...(polishUsage ? [polishUsage] : []),
-      ...(qualityUsage ? [qualityUsage] : []),
-      ...(rewriteUsage ? [rewriteUsage] : []),
-    ),
+    usage: draftUsage,
+    ctaText: resolvedCta.ctaText,
+    ctaUrl: resolvedCta.ctaUrl,
   };
 }

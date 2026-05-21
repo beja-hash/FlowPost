@@ -75,12 +75,15 @@ function toErrorResponse(error: unknown, input: SafeGenerateInput = {}) {
 
 export async function POST(request: NextRequest) {
   let safeInput: SafeGenerateInput = {};
+  const totalTimer = "[ArticleGeneration API] total";
+  console.time(totalTimer);
 
   try {
     console.log("[article-generate] request received");
     const session = await auth();
 
     if (!session?.user?.id) {
+      console.timeEnd(totalTimer);
       return NextResponse.json(
         {
           ok: false,
@@ -140,8 +143,10 @@ export async function POST(request: NextRequest) {
       articleId: asset.id,
       contentLength: asset.canonicalBody.length,
     });
+    console.timeEnd(totalTimer);
     return NextResponse.json(responseBody);
   } catch (error) {
+    console.timeEnd(totalTimer);
     return toErrorResponse(error, safeInput);
   }
 }

@@ -10,6 +10,12 @@ export type ArticleContentCleanupOptions = {
   productBlockEnabled?: boolean;
 };
 
+export type ResolvedArticleCta = {
+  ctaText: string;
+  ctaUrl: string | null;
+  warnings: string[];
+};
+
 const publishFormatByPlatform: Record<PlatformSlug, PlatformFormat> = {
   dzen: "plainText",
   vc: "plainText",
@@ -20,6 +26,9 @@ const bareUrlPattern = /https?:\/\/[^\s)]+/gi;
 const standaloneUrlPattern = /^https?:\/\/\S+$/i;
 const junkCtaLinePattern =
   /^(покупка услуг|покупка|услуги|купить|заказать|перейти по ссылке|переходите по ссылке|ссылка ниже|ссылка:?|cta:?|call to action:?|url:?)$/i;
+const junkCtaTextPattern =
+  /^(покупка услуг|покупка|услуги|купить|заказать|перейти|перейти по ссылке|переходите по ссылке|ссылка ниже|ссылка|cta|call to action|url)$/i;
+const genericBrandNamePattern = /^(ai content distribution platform|content distribution platform)$/i;
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -36,9 +45,53 @@ function stripInlineMarkdown(line: string) {
     .trim();
 }
 
+function normalizeTextValue(value?: string | null) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function isInvalidCtaText(value?: string | null) {
+  const normalized = normalizeTextValue(value);
+  return !normalized || junkCtaTextPattern.test(normalized);
+}
+
+function isUsableBrandName(value?: string | null) {
+  const normalized = normalizeTextValue(value);
+  return Boolean(
+    normalized &&
+      !junkCtaTextPattern.test(normalized) &&
+      !genericBrandNamePattern.test(normalized.toLowerCase()),
+  );
+}
+
+export function resolveArticleCta(
+  options: ArticleContentCleanupOptions = {},
+): ResolvedArticleCta {
+  const warnings: string[] = [];
+  const rawCtaText = normalizeTextValue(options.ctaText);
+  const brandName = normalizeTextValue(options.brandName);
+  const ctaText = !isInvalidCtaText(rawCtaText)
+    ? rawCtaText
+    : isUsableBrandName(brandName)
+      ? brandName
+      : "FlowPostAI";
+  const ctaUrl =
+    normalizeTextValue(options.ctaUrl) || normalizeTextValue(options.brandUrl) || null;
+
+  if (rawCtaText && rawCtaText !== ctaText) {
+    warnings.push(`CTA text "${rawCtaText}" replaced with "${ctaText}".`);
+  }
+
+  if (!ctaUrl) {
+    warnings.push(
+      "CTA URL is missing; body will contain plain CTA text without a link.",
+    );
+  }
+
+  return { ctaText, ctaUrl, warnings };
+}
+
 function normalizeCtaText(options: ArticleContentCleanupOptions) {
-  const text = options.ctaText?.trim() || options.brandName?.trim() || "FlowPost";
-  return text.replace(/\s+/g, " ");
+  return resolveArticleCta(options).ctaText;
 }
 
 function normalizeProductDescription(ctaText: string) {

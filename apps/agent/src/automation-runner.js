@@ -914,9 +914,26 @@ function createAutomationRunner({ app, sendState, logJob }) {
   const standaloneUrlPattern = /^https?:\/\/\S+$/i;
   const junkCtaLinePattern =
     /^(покупка услуг|покупка|услуги|купить|заказать|перейти по ссылке|переходите по ссылке|ссылка ниже|ссылка:?|cta:?|call to action:?|url:?)$/i;
+  const junkCtaTextPattern =
+    /^(покупка услуг|покупка|услуги|купить|заказать|перейти|перейти по ссылке|переходите по ссылке|ссылка ниже|ссылка|cta|call to action|url)$/i;
+  const genericBrandNamePattern = /^(ai content distribution platform|content distribution platform)$/i;
 
   function normalizeCtaText(payload) {
-    return String(payload.ctaText || "FlowPost").replace(/\s+/g, " ").trim();
+    const raw = String(payload.ctaText || "").replace(/\s+/g, " ").trim();
+    if (raw && !junkCtaTextPattern.test(raw)) {
+      return raw;
+    }
+
+    const brandName = String(payload.brandName || "").replace(/\s+/g, " ").trim();
+    if (
+      brandName &&
+      !junkCtaTextPattern.test(brandName) &&
+      !genericBrandNamePattern.test(brandName.toLowerCase())
+    ) {
+      return brandName;
+    }
+
+    return "FlowPostAI";
   }
 
   function productBlock(ctaText) {
@@ -1026,7 +1043,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
     if (!selected) {
       throw automationError(
         platform === "dzen" ? "DZEN_CTA_TEXT_NOT_FOUND" : "VC_CTA_TEXT_NOT_FOUND",
-        `Не удалось найти текст ${text} в редакторе для добавления ссылки.`,
+        `Не удалось найти CTA-текст ${text} в статье для добавления ссылки.`,
         `CTA text "${text}" was not found in ${platform} editor.`,
         "add editor link",
       );

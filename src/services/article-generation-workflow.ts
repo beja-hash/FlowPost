@@ -147,7 +147,12 @@ export async function generateArticleForUser(userId: string, articleId: string) 
 }
 
 async function generateArticleForUserOnce(userId: string, articleId: string) {
+  const totalTimer = `[ArticleGeneration:${articleId}] total`;
+  const loadTimer = `[ArticleGeneration:${articleId}] load-data`;
+  console.time(totalTimer);
+  console.time(loadTimer);
   const { article, variant } = await getArticleForUser(userId, articleId);
+  console.timeEnd(loadTimer);
   console.log("[article-generate] article found/created", {
     userId,
     articleId,
@@ -157,6 +162,8 @@ async function generateArticleForUserOnce(userId: string, articleId: string) {
   let saved = false;
 
   try {
+    const llmTimer = `[ArticleGeneration:${articleId}] llm-request`;
+    console.time(llmTimer);
     console.log("[article-generate] llm started", { userId, articleId });
     const generated = await generateArticle(
       {
@@ -180,6 +187,7 @@ async function generateArticleForUserOnce(userId: string, articleId: string) {
           }),
       },
     );
+    console.timeEnd(llmTimer);
     console.log("[article-generate] llm completed", {
       userId,
       articleId,
@@ -195,15 +203,19 @@ async function generateArticleForUserOnce(userId: string, articleId: string) {
       estimated_cost: generated.usage.estimatedCost,
     });
 
+    const saveTimer = `[ArticleGeneration:${articleId}] save`;
+    console.time(saveTimer);
     const updated = await prisma.articleAsset.update({
       where: { id: article.id },
       data: {
         title: generated.title,
         canonicalBody: generated.content,
+        ctaText: generated.ctaText,
+        ctaUrl: generated.ctaUrl,
         generationMeta: {
           provider: "polza",
           model: generated.usage.model,
-          pipeline: ["strategy", "draft", "polish"],
+          pipeline: ["single_llm_article", "cleanup", "product_block"],
           strategy: generated.strategy,
           qualityScore: generated.polished.qualityScore,
           polishChanged: generated.polished.changed,
@@ -215,8 +227,8 @@ async function generateArticleForUserOnce(userId: string, articleId: string) {
           productBlockEnabled: true,
           linkHandling: {
             bodyContainsUrl: false,
-            ctaText: article.ctaText,
-            ctaUrl: article.ctaUrl,
+            ctaText: generated.ctaText,
+            ctaUrl: generated.ctaUrl,
           },
           inputTokens: generated.usage.inputTokens,
           outputTokens: generated.usage.outputTokens,
@@ -231,6 +243,7 @@ async function generateArticleForUserOnce(userId: string, articleId: string) {
             data: {
               headline: generated.title,
               body: generated.content,
+              callToAction: generated.ctaText,
               status: VariantStatus.READY,
             },
           },
@@ -238,6 +251,7 @@ async function generateArticleForUserOnce(userId: string, articleId: string) {
       },
     });
     saved = true;
+    console.timeEnd(saveTimer);
 
     console.log("[article-generate] saved", {
       userId,
@@ -247,8 +261,10 @@ async function generateArticleForUserOnce(userId: string, articleId: string) {
       contentLength: generated.content.length,
     });
     logArticleStep("generate:done", { userId, articleId });
+    console.timeEnd(totalTimer);
     return updated;
   } catch (error) {
+    console.timeEnd(totalTimer);
     logArticleError("generate:failed", error, { userId, articleId });
     if (!saved) {
       await markArticleFailed(article.id, getFailureMessage(error));

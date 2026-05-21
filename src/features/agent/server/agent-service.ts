@@ -21,6 +21,7 @@ import {
 import {
   cleanupGeneratedArticleContent,
   formatArticleForPlatform,
+  resolveArticleCta,
 } from "@/services/article-formatting";
 
 const TOKEN_PREFIX = "fp_agent_";
@@ -1077,9 +1078,15 @@ export async function createPublishArticleJob({
     };
   }
 
-  const cleanedBody = cleanupGeneratedArticleContent(article.canonicalBody, {
+  const resolvedCta = resolveArticleCta({
     ctaText: article.ctaText,
     ctaUrl: article.ctaUrl,
+    brandName: article.brand.name,
+    brandUrl: article.brand.siteUrl,
+  });
+  const cleanedBody = cleanupGeneratedArticleContent(article.canonicalBody, {
+    ctaText: resolvedCta.ctaText,
+    ctaUrl: resolvedCta.ctaUrl,
     brandName: article.brand.name,
     brandUrl: article.brand.siteUrl,
     productBlockEnabled: true,
@@ -1100,8 +1107,9 @@ export async function createPublishArticleJob({
     title: article.title,
     content: body,
     body,
-    ctaText: article.ctaText,
-    ctaUrl: article.ctaUrl,
+    ctaText: resolvedCta.ctaText,
+    ctaUrl: resolvedCta.ctaUrl,
+    brandName: article.brand.name,
   };
   const job = await prisma.$transaction(async (tx) => {
     await tx.articleAsset.update({
