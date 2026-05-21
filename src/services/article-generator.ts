@@ -169,6 +169,17 @@ export class ArticleGenerationContentError extends Error {
   }
 }
 
+class LlmJsonParseError extends ArticleGenerationContentError {
+  constructor(
+    public readonly stage: string,
+    public readonly rawResponse: string,
+    public readonly parseError: unknown,
+  ) {
+    super(`LLM returned invalid JSON at ${stage}. Попробуйте сгенерировать статью еще раз.`);
+    this.name = "LlmJsonParseError";
+  }
+}
+
 function devLog(step: string, context: Record<string, unknown> = {}) {
   if (process.env.NODE_ENV !== "production") {
     console.log("[article-generator]", { step, ...context });
@@ -408,6 +419,7 @@ function extractJsonPayload(text: string) {
 
 function parseJsonObject<T>(text: string, stage: string): T {
   const payload = extractJsonPayload(text);
+  let lastError: unknown = null;
   const candidates = [
     payload,
     payload
@@ -419,7 +431,8 @@ function parseJsonObject<T>(text: string, stage: string): T {
   for (const candidate of candidates) {
     try {
       return JSON.parse(candidate) as T;
-    } catch {
+    } catch (error) {
+      lastError = error;
       // Try the next recovery candidate.
     }
   }
@@ -427,10 +440,8 @@ function parseJsonObject<T>(text: string, stage: string): T {
   try {
     const repaired = payload.slice(payload.indexOf("{"), payload.lastIndexOf("}") + 1);
     return JSON.parse(repaired) as T;
-  } catch {
-    throw new ArticleGenerationContentError(
-      `LLM returned invalid JSON at ${stage}. Попробуйте сгенерировать статью еще раз.`,
-    );
+  } catch (error) {
+    throw new LlmJsonParseError(stage, text, error ?? lastError);
   }
 }
 
@@ -541,6 +552,57 @@ function validateQualityReport(value: ArticleQualityReport) {
   value.rewriteRequired = Boolean(value.rewriteRequired);
 }
 
+function buildFallbackArticleStrategy(
+  brief: NormalizedArticleBrief,
+  targetLength: ArticleTargetLength,
+): ArticleStrategy {
+  const topic = brief.topic.trim();
+  const pain = brief.readerPain.trim();
+  const thesis = brief.mainThesis.trim();
+
+  return {
+    platform: brief.platform,
+    contentFormat: brief.contentFormat,
+    tone: brief.tone,
+    targetAudience: brief.targetAudience,
+    readerPain: pain,
+    mainThesis: thesis,
+    angle: brief.angle,
+    targetLength,
+    titles: [
+      topic,
+      `${pain}: что делать, если привычный контент не срабатывает`,
+      `Почему ${topic.toLowerCase()} не решается одной статьей`,
+      `Как проверить контентную гипотезу без долгого ожидания SEO`,
+      `${thesis}: практичный разбор для команды`,
+    ].map((title) => title.slice(0, 180)),
+    selectedTitle: topic,
+    hook: pain,
+    outline: [
+      {
+        heading: "Проблема",
+        goal: "Показать боль читателя без общего вступления.",
+        keyPoints: [pain, "Что обычно ломается в процессе"],
+      },
+      {
+        heading: "Причины",
+        goal: "Разобрать, почему привычный подход не дает быстрый сигнал.",
+        keyPoints: [thesis, "Ограничения SEO и собственного сайта"],
+      },
+      {
+        heading: "Что делать",
+        goal: "Дать практичные шаги и мягко подвести к продукту.",
+        keyPoints: [...brief.proofIdeas, "Аккуратный product block без URL в body"],
+      },
+    ],
+    proofIdeas: brief.proofIdeas,
+    productMentionStrategy:
+      "Упомянуть продукт ближе к концу как инструмент для регулярной работы, без гарантий результата.",
+    ctaStrategy:
+      "Использовать только обычный текст CTA без голых URL и markdown-ссылок.",
+  };
+}
+
 function hasUnsupportedPlatformMention(content: string) {
   return /\b(Medium|Habr|Хабр|Spark|Rusbase|Русбейс|Cossa)\b/i.test(content);
 }
@@ -608,7 +670,7 @@ function jsonInstruction() {
 export async function generateArticleStrategy(
   input: ArticleGenerationInput,
   brief = normalizeArticleBrief(input),
-): Promise<{ strategy: ArticleStrategy; usage: LlmUsage }> {
+): Promise<{ strategy: ArticleStrategy; usage: LlmUsage; warnings: string[] }> {
   const platform = brief.platform;
   const targetLength = getTargetLength(platform, brief.contentFormat);
   const result = await generateText([
@@ -683,14 +745,38 @@ ${JSON.stringify(targetLength, null, 2)}
     },
   ], { maxTokens: 1200 });
 
-  const strategy = parseJsonObject<ArticleStrategy>(result.text, "strategy");
-  strategy.platform = platform;
-  strategy.contentFormat = brief.contentFormat;
-  strategy.tone = brief.tone;
-  strategy.targetLength = targetLength;
-  validateStrategy(strategy);
+  let strategy: ArticleStrategy;
+  const warnings: string[] = [];
 
-  return { strategy, usage: result.usage };
+  try {
+    strategy = parseJsonObject<ArticleStrategy>(result.text, "strategy");
+    strategy.platform = platform;
+    strategy.contentFormat = brief.contentFormat;
+    strategy.tone = brief.tone;
+    strategy.targetLength = targetLength;
+    validateStrategy(strategy);
+  } catch (error) {
+    if (!(error instanceof LlmJsonParseError && error.stage === "strategy")) {
+      throw error;
+    }
+
+    console.error("[article-generator] strategy JSON parse failed", {
+      stage: "article_generation",
+      articleTitle: input.article.title,
+      platform,
+      parseError:
+        error.parseError instanceof Error
+          ? error.parseError.message
+          : String(error.parseError),
+      rawResponse: error.rawResponse.slice(0, 1000),
+    });
+    strategy = buildFallbackArticleStrategy(brief, targetLength);
+    warnings.push(
+      "Статья сгенерирована с fallback-стратегией: LLM вернул невалидный JSON на вспомогательном этапе.",
+    );
+  }
+
+  return { strategy, usage: result.usage, warnings };
 }
 
 export async function generateArticleDraft(
@@ -1049,13 +1135,19 @@ export async function generateArticle(
 ): Promise<GeneratedArticle> {
   options.onStep?.("normalize");
   const brief = normalizeArticleBrief(input);
+  const warnings: string[] = [];
 
   options.onStep?.("strategy");
   devLog("strategy:start");
-  const { strategy, usage: strategyUsage } = await generateArticleStrategy(
+  const {
+    strategy,
+    usage: strategyUsage,
+    warnings: strategyWarnings,
+  } = await generateArticleStrategy(
     input,
     brief,
   );
+  warnings.push(...strategyWarnings);
   devLog("strategy:done", {
     platform: strategy.platform,
     format: strategy.contentFormat,
@@ -1077,7 +1169,6 @@ export async function generateArticle(
   let qualityUsage: LlmUsage | null = null;
   let rewriteUsage: LlmUsage | null = null;
   let qualityReport: ArticleQualityReport | null = null;
-  const warnings: string[] = [];
 
   try {
     options.onStep?.("polish");
