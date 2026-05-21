@@ -257,6 +257,58 @@ async function parseBriefResponse<T>(response: Response) {
   return body.result;
 }
 
+type ArticleGenerationResponseBody =
+  | {
+      ok?: boolean;
+      asset?: DistributionAssetListItem;
+      status?: "requires_agent" | "queued" | "busy";
+      message?: string;
+      job?: { id: string };
+      error?: string | { message?: string };
+      details?: string;
+      code?: string;
+    }
+  | Record<string, unknown>;
+
+async function parseGenerationResponse(response: Response) {
+  try {
+    return (await response.json()) as ArticleGenerationResponseBody;
+  } catch {
+    return {
+      error: "Article generation failed",
+      details: "API returned a non-JSON response.",
+    };
+  }
+}
+
+function getGenerationErrorMessage(body: ArticleGenerationResponseBody) {
+  const details = "details" in body && typeof body.details === "string"
+    ? body.details
+    : null;
+  const error = "error" in body ? body.error : null;
+
+  if (details) {
+    return details;
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  if (error && typeof error === "object" && "message" in error) {
+    const message = error.message;
+    if (typeof message === "string" && message.trim()) {
+      return message;
+    }
+  }
+
+  if ("message" in body && typeof body.message === "string" && body.message.trim()) {
+    return body.message;
+  }
+
+  return "Не удалось сгенерировать статью.";
+}
+
 export function ArticleEditorPage({
   mode,
   brands,
@@ -542,27 +594,28 @@ export function ArticleEditorPage({
 
         const savedAsset = await saveArticle();
         generatedAssetId = savedAsset.id;
+        const generationPayload = { articleId: savedAsset.id };
         const response = await fetch("/api/articles/generate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ articleId: savedAsset.id }),
+          body: JSON.stringify(generationPayload),
         });
-        const body = (await response.json()) as {
-          ok?: boolean;
-          asset?: DistributionAssetListItem;
-          status?: "requires_agent" | "queued" | "busy";
-          message?: string;
-          job?: { id: string };
-          error?: { message?: string };
-        };
+        const body = await parseGenerationResponse(response);
 
         if (!response.ok) {
-          throw new Error(
-            body.error?.message ?? "Не удалось сгенерировать статью.",
-          );
+          console.error("[ArticleGeneration] failed", {
+            status: response.status,
+            response: body,
+            payload: generationPayload,
+          });
+          throw new Error(getGenerationErrorMessage(body));
         }
 
-        const nextAsset = body.asset ?? (await reloadAsset(savedAsset.id));
+        const generatedAsset =
+          "asset" in body && body.asset
+            ? (body.asset as DistributionAssetListItem)
+            : null;
+        const nextAsset = generatedAsset ?? (await reloadAsset(savedAsset.id));
         syncFromAsset(nextAsset);
         if (process.env.NODE_ENV !== "production") {
           console.log("[article-generate-ui] success", {
@@ -582,14 +635,14 @@ export function ArticleEditorPage({
             console.error("[article-generate-ui] recovery failed", refetchError);
           }
         }
-        if (process.env.NODE_ENV !== "production") {
-          console.log("[article-generate-ui] failed", {
-            assetId: generatedAssetId,
-            error,
-          });
-        }
+        console.error("[ArticleGeneration] failed", {
+          assetId: generatedAssetId,
+          error,
+        });
         toast.error(
-          "Не удалось завершить генерацию. Попробуйте еще раз.",
+          error instanceof Error
+            ? error.message
+            : "Не удалось завершить генерацию. Попробуйте еще раз.",
         );
       } finally {
         if (timer) {

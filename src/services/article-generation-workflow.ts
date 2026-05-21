@@ -36,6 +36,13 @@ function logArticleError(
   });
 }
 
+function getFailureMessage(error: unknown) {
+  const message =
+    error instanceof Error ? error.message.trim() : "Article generation failed.";
+
+  return message || "Article generation failed.";
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -244,7 +251,7 @@ async function generateArticleForUserOnce(userId: string, articleId: string) {
   } catch (error) {
     logArticleError("generate:failed", error, { userId, articleId });
     if (!saved) {
-      await markArticleFailed(article.id, "Generation failed.");
+      await markArticleFailed(article.id, getFailureMessage(error));
     }
     throw error;
   }

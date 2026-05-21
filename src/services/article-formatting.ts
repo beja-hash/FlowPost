@@ -98,12 +98,17 @@ function removeTrailingJunk(lines: string[], ctaText: string) {
 }
 
 export function cleanupGeneratedArticleContent(
-  content: string,
+  content: string | null | undefined,
   options: ArticleContentCleanupOptions = {},
 ) {
+  const source = typeof content === "string" ? content : "";
+  if (!source.trim()) {
+    return "";
+  }
+
   const ctaText = normalizeCtaText(options);
   const productBlockEnabled = options.productBlockEnabled !== false;
-  const withoutMarkdownLinks = content.replace(markdownLinkPattern, "$1");
+  const withoutMarkdownLinks = source.replace(markdownLinkPattern, "$1");
   const withoutInlineBareUrls = withoutMarkdownLinks.replace(bareUrlPattern, "");
   const cleanedLines = withoutInlineBareUrls
     .replace(/\r\n/g, "\n")

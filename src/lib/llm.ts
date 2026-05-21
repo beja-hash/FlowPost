@@ -83,8 +83,13 @@ export async function generateText(
     estimated_cost: estimatedCost,
   });
 
+  const text = completion.choices[0]?.message.content?.trim() ?? "";
+  if (!text) {
+    throw new Error("LLM returned empty article content");
+  }
+
   return {
-    text: completion.choices[0]?.message.content?.trim() ?? "",
+    text,
     usage: {
       model,
       inputTokens,

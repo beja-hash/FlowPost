@@ -359,7 +359,7 @@ export function normalizeArticleBrief(
     readerPain,
     mainThesis,
     facts,
-    cta: input.article.ctaText?.trim() || input.brand.primaryCta?.trim() || null,
+    cta: input.article.ctaText?.trim() || input.brand.name?.trim() || "FlowPost",
     link: input.article.ctaUrl?.trim() || input.brand.siteUrl?.trim() || null,
     intent: input.article.intent,
     angle: `${mainThesis}. Показать через боль аудитории: ${readerPain}`,
@@ -784,7 +784,7 @@ export async function polishArticleForPlatform(
   const productName = input?.brand.name ?? "AI Content Distribution Platform";
   const productLink = input?.article.ctaUrl ?? input?.brand.siteUrl ?? "не указана";
   const productCta =
-    input?.article.ctaText ?? input?.brand.primaryCta ?? "Посмотреть демо";
+    input?.article.ctaText?.trim() || input?.brand.name?.trim() || "FlowPost";
   const platformName = strategy.platform === "vc" ? "VC.ru" : "Дзен";
   const unsupportedPlatformFoundInDraft = hasUnsupportedPlatformMention(
     `${draft.title}\n${draft.content}`,

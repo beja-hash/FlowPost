@@ -14,58 +14,90 @@ const generateSchema = z.object({
   articleId: z.string().cuid(),
 });
 
-function toErrorResponse(error: unknown) {
-  console.error("[api/articles/generate:error]", {
-    error:
-      error instanceof Error
-        ? { name: error.name, message: error.message, stack: error.stack }
-        : error,
+type SafeGenerateInput = {
+  articleId?: unknown;
+};
+
+function getErrorMessage(error: unknown, fallback = "Не удалось сгенерировать статью.") {
+  return error instanceof Error ? error.message : fallback;
+}
+
+function getErrorStack(error: unknown) {
+  return error instanceof Error ? error.stack : undefined;
+}
+
+function getErrorCause(error: unknown) {
+  if (!(error instanceof Error) || !("cause" in error)) {
+    return undefined;
+  }
+
+  const cause = error.cause;
+  return cause instanceof Error
+    ? { name: cause.name, message: cause.message, stack: cause.stack }
+    : cause;
+}
+
+function toErrorResponse(error: unknown, input: SafeGenerateInput = {}) {
+  const details = getErrorMessage(error);
+  const code =
+    error instanceof ArticleWorkflowError
+      ? error.code
+      : error instanceof ZodError
+        ? "INVALID_ARTICLE_GENERATE_PAYLOAD"
+        : "ARTICLE_GENERATION_FAILED";
+  const status =
+    error instanceof ArticleWorkflowError
+      ? error.statusCode
+      : error instanceof ZodError
+        ? 400
+        : 500;
+
+  console.error("[ArticleGeneration API] failed", {
+    message: details,
+    stack: getErrorStack(error),
+    cause: getErrorCause(error),
+    input,
   });
-
-  if (error instanceof ArticleWorkflowError) {
-    return NextResponse.json(
-      { error: { code: error.code, message: error.message } },
-      { status: error.statusCode },
-    );
-  }
-
-  if (error instanceof ZodError) {
-    return NextResponse.json(
-      {
-        error: {
-          code: "INVALID_ARTICLE_GENERATE_PAYLOAD",
-          message: error.issues[0]?.message ?? "Некорректный запрос.",
-        },
-      },
-      { status: 400 },
-    );
-  }
 
   return NextResponse.json(
     {
-      error: {
-        code: "ARTICLE_GENERATION_FAILED",
-        message:
-          error instanceof Error ? error.message : "Не удалось сгенерировать статью.",
-      },
+      ok: false,
+      error: "Article generation failed",
+      details:
+        error instanceof ZodError
+          ? (error.issues[0]?.message ?? "Некорректный запрос.")
+          : details,
+      code,
     },
-    { status: 500 },
+    { status },
   );
 }
 
 export async function POST(request: NextRequest) {
+  let safeInput: SafeGenerateInput = {};
+
   try {
     console.log("[article-generate] request received");
     const session = await auth();
 
     if (!session?.user?.id) {
       return NextResponse.json(
-        { error: { code: "UNAUTHORIZED", message: "Требуется авторизация." } },
+        {
+          ok: false,
+          error: "Article generation failed",
+          details: "Требуется авторизация.",
+          code: "UNAUTHORIZED",
+        },
         { status: 401 },
       );
     }
 
-    const payload = generateSchema.parse(await request.json());
+    const rawPayload = (await request.json()) as unknown;
+    safeInput =
+      rawPayload && typeof rawPayload === "object"
+        ? { articleId: (rawPayload as SafeGenerateInput).articleId }
+        : {};
+    const payload = generateSchema.parse(rawPayload);
     console.log("[article-generate] article found/created", {
       userId: session.user.id,
       articleId: payload.articleId,
@@ -110,6 +142,6 @@ export async function POST(request: NextRequest) {
     });
     return NextResponse.json(responseBody);
   } catch (error) {
-    return toErrorResponse(error);
+    return toErrorResponse(error, safeInput);
   }
 }
