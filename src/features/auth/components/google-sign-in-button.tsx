@@ -7,7 +7,13 @@ import { useSearchParams } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
 
-export function GoogleSignInButton() {
+type GoogleSignInButtonProps = {
+  children?: React.ReactNode;
+};
+
+export function GoogleSignInButton({
+  children = "Войти через Google",
+}: GoogleSignInButtonProps) {
   const searchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
 
@@ -34,7 +40,7 @@ export function GoogleSignInButton() {
           G
         </span>
       )}
-      Войти через Google
+      {children}
     </Button>
   );
 }

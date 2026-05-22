@@ -1,8 +1,10 @@
 import type { NextAuthOptions } from "next-auth";
 import { UserStatus } from "@prisma/client";
+import CredentialsProvider from "next-auth/providers/credentials";
 import GoogleProvider from "next-auth/providers/google";
 
 import { createLoggedPrismaAdapter } from "@/infrastructure/auth/logged-prisma-adapter";
+import { verifyPassword } from "@/infrastructure/auth/password";
 import { prisma } from "@/infrastructure/db/prisma";
 import { debugLog, debugWarn } from "@/lib/debug-log";
 import { env } from "@/lib/env";
@@ -67,6 +69,49 @@ export const authOptions: NextAuthOptions = {
     },
   },
   providers: [
+    CredentialsProvider({
+      name: "Email and password",
+      credentials: {
+        email: { label: "Email", type: "email" },
+        password: { label: "Password", type: "password" },
+      },
+      async authorize(credentials) {
+        const email = credentials?.email?.trim().toLowerCase();
+        const password = credentials?.password ?? "";
+
+        if (!email || !password) {
+          return null;
+        }
+
+        const user = await prisma.user.findUnique({
+          where: { email },
+          select: {
+            id: true,
+            email: true,
+            name: true,
+            image: true,
+            status: true,
+            passwordHash: true,
+          },
+        });
+
+        if (!user || user.status !== UserStatus.ACTIVE) {
+          return null;
+        }
+
+        if (!(await verifyPassword(password, user.passwordHash))) {
+          return null;
+        }
+
+        return {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          image: user.image,
+          status: user.status,
+        };
+      },
+    }),
     GoogleProvider({
       clientId: env.GOOGLE_CLIENT_ID,
       clientSecret: env.GOOGLE_CLIENT_SECRET,

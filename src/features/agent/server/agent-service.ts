@@ -25,6 +25,8 @@ import {
 const TOKEN_PREFIX = "fp_agent_";
 const PAIRING_TTL_MINUTES = 15;
 const ACTIVE_AGENT_WINDOW_MS = 90 * 1000;
+const SCHEDULED_TRIGGER_LEAD_MS = 30 * 1000;
+const SCHEDULED_RETRY_WINDOW_MS = 2 * 60 * 1000;
 const STALE_RUNNING_JOB_MS = 10 * 60 * 1000;
 const STALE_INTERACTIVE_JOB_MS = 2 * 60 * 1000;
 const INTERACTIVE_PLATFORM_JOB_TYPES = [
@@ -1057,49 +1059,27 @@ export async function createPublishArticleJob({
     agentWakeStartedAt: agentWakeStartedAt ?? null,
   });
 
-  const article = await prisma.articleAsset.findFirst({
+  const publication = await prisma.publication.findFirst({
     where: {
-      id: articleId,
+      assetId: articleId,
       workspace: {
         members: {
           some: { userId },
         },
       },
-      status: {
-        not: AssetStatus.ARCHIVED,
-      },
-    },
-    include: {
-      variants: {
-        include: {
-          platform: true,
-        },
-        take: 1,
-      },
-      publications: {
-        take: 1,
-        orderBy: {
-          createdAt: "desc",
-        },
-      },
-      workspace: {
-        select: {
-          id: true,
-        },
-      },
-      brand: {
-        select: {
-          name: true,
-          siteUrl: true,
+      asset: {
+        status: {
+          not: AssetStatus.ARCHIVED,
         },
       },
     },
+    select: {
+      id: true,
+    },
+    orderBy: { createdAt: "desc" },
   });
 
-  const variant = article?.variants[0];
-  const publication = article?.publications[0];
-
-  if (!article || !variant || !publication) {
+  if (!publication) {
     throw new AgentServiceError(
       404,
       "ARTICLE_NOT_FOUND",
@@ -1107,6 +1087,78 @@ export async function createPublishArticleJob({
     );
   }
 
+  return runPublicationJob({
+    userId,
+    publicationId: publication.id,
+    mode: "manual",
+    allowOfflineQueue,
+    strategyTaskId,
+    agentWakeStartedAt,
+  });
+}
+
+type RunPublicationJobMode = "manual" | "scheduled";
+
+export async function runPublicationJob({
+  userId,
+  publicationId,
+  mode,
+  allowOfflineQueue = false,
+  strategyTaskId,
+  agentWakeStartedAt,
+  activeDevice,
+  expectedStatuses,
+  now = new Date(),
+}: {
+  userId: string;
+  publicationId: string;
+  mode: RunPublicationJobMode;
+  allowOfflineQueue?: boolean;
+  strategyTaskId?: string;
+  agentWakeStartedAt?: string | Date | null;
+  activeDevice?: AgentDevice | null;
+  expectedStatuses?: PublicationStatus[];
+  now?: Date;
+}) {
+  const publication = await prisma.publication.findFirst({
+    where: {
+      id: publicationId,
+      workspace: {
+        members: {
+          some: { userId },
+        },
+      },
+      asset: {
+        status: {
+          not: AssetStatus.ARCHIVED,
+        },
+      },
+    },
+    include: {
+      asset: {
+        include: {
+          workspace: { select: { id: true } },
+          brand: { select: { name: true, siteUrl: true } },
+        },
+      },
+      variant: {
+        include: {
+          platform: true,
+        },
+      },
+    },
+  });
+
+  if (!publication) {
+    throw new AgentServiceError(
+      404,
+      "PUBLICATION_NOT_FOUND",
+      "Публикация для запуска не найдена.",
+    );
+  }
+
+  const article = publication.asset;
+  const variant = publication.variant;
   const config = getPlatformConfig(variant.platform.slug);
 
   if (!config) {
@@ -1129,7 +1181,8 @@ export async function createPublishArticleJob({
   if (account?.status !== PlatformAccountStatus.CONNECTED) {
     console.log("[agent-service] publish-job:platform-not-connected", {
       userId,
-      articleId,
+      articleId: article.id,
+      publicationId,
       platform: config.slug,
       accountStatus: account?.status ?? null,
     });
@@ -1141,18 +1194,26 @@ export async function createPublishArticleJob({
     );
   }
 
-  const agent = await getAgentConnectionState(userId);
-  const activeDevice =
-    agent.state === "active" || agent.state === "busy"
+  const agent = activeDevice
+    ? {
+        state: "active" as const,
+        busyJob: null,
+      }
+    : await getAgentConnectionState(userId);
+  const selectedDevice =
+    activeDevice ??
+    (agent.state === "active" || agent.state === "busy"
       ? await getActiveAgentDevice(userId)
-      : null;
+      : null);
 
   console.log("[agent-service] publish-job:active-agent", {
     userId,
-    articleId,
+    articleId: article.id,
+    publicationId,
+    mode,
     platform: config.slug,
     agentState: agent.state,
-    activeDeviceId: activeDevice?.id ?? null,
+    activeDeviceId: selectedDevice?.id ?? null,
     busyJobId: agent.busyJob?.id ?? null,
   });
 
@@ -1161,23 +1222,40 @@ export async function createPublishArticleJob({
     platform: config.slug,
   });
 
-  const activeDeviceReady = isFreshAfterAction(activeDevice, agentWakeStartedAt);
+  const activeDeviceReady = isFreshAfterAction(selectedDevice, agentWakeStartedAt);
 
   if (!activeDeviceReady && !allowOfflineQueue) {
     console.log("[agent-service] publish-job:requires-agent", {
       userId,
-      articleId,
+      articleId: article.id,
+      publicationId,
+      mode,
       platform: config.slug,
       agentState: agent.state,
-      activeDeviceId: activeDevice?.id ?? null,
-      activeDeviceLastSeenAt: activeDevice?.lastSeenAt ?? null,
+      activeDeviceId: selectedDevice?.id ?? null,
+      activeDeviceLastSeenAt: selectedDevice?.lastSeenAt ?? null,
       agentWakeStartedAt: agentWakeStartedAt ?? null,
     });
+
+    if (mode === "scheduled") {
+      await prisma.publication.update({
+        where: { id: publication.id },
+        data: {
+          status: PublicationStatus.WAITING_AGENT,
+          lockedAt: null,
+          processingAt: null,
+          lastError:
+            "Не удалось запустить agent для автопубликации. Откройте FlowPost Agent и попробуйте снова.",
+        },
+      });
+    }
 
     return {
       status: "requires_agent" as const,
       message:
-        agent.state === "paired_offline"
+        mode === "scheduled"
+          ? "Не удалось запустить agent для автопубликации. Откройте FlowPost Agent и попробуйте снова."
+          : agent.state === "paired_offline"
           ? "FlowPost Agent не запущен. Мы попробуем открыть его автоматически."
           : "Для публикации установите и подключите FlowPost Agent.",
       agentState: agent.state,
@@ -1189,7 +1267,7 @@ export async function createPublishArticleJob({
   const existingJob = await prisma.agentJob.findFirst({
     where: {
       userId,
-      type: AgentJobType.PUBLISH_ARTICLE,
+      type: { in: publishAgentJobTypes() },
       platform: config.slug,
       status: {
         in: [
@@ -1200,8 +1278,8 @@ export async function createPublishArticleJob({
         ],
       },
       payload: {
-        path: ["articleId"],
-        equals: article.id,
+        path: ["publicationId"],
+        equals: publication.id,
       },
     },
     orderBy: {
@@ -1212,7 +1290,9 @@ export async function createPublishArticleJob({
   if (existingJob) {
     console.log("[agent-service] existing-publish-job:found", {
       userId,
-      articleId,
+      articleId: article.id,
+      publicationId,
+      mode,
       platform: config.slug,
       jobId: existingJob.id,
       status: existingJob.status,
@@ -1225,7 +1305,7 @@ export async function createPublishArticleJob({
           : ("busy" as const),
       message: "Публикация уже отправлена в Agent.",
       agentState: "busy" as const,
-      agentDevice: activeDevice ? publicAgentDevice(activeDevice) : null,
+      agentDevice: selectedDevice ? publicAgentDevice(selectedDevice) : null,
       job: publicAgentJob(existingJob),
       existing: true,
     };
@@ -1239,10 +1319,35 @@ export async function createPublishArticleJob({
     userId,
     strategyTaskId,
   });
-  const queuedPublicationStatus = activeDeviceReady
-    ? PublicationStatus.SCHEDULED
-    : PublicationStatus.WAITING_AGENT;
   const job = await prisma.$transaction(async (tx) => {
+    const lock = await tx.publication.updateMany({
+      where: {
+        id: publication.id,
+        ...(expectedStatuses
+          ? { status: { in: expectedStatuses } }
+          : {
+              status: {
+                notIn: [
+                  PublicationStatus.PUBLISHING,
+                  PublicationStatus.PUBLISHED,
+                  PublicationStatus.CANCELED,
+                ],
+              },
+            }),
+      },
+      data: {
+        status: PublicationStatus.PUBLISHING,
+        processingAt: now,
+        lockedAt: now,
+        retryCount: { increment: mode === "scheduled" ? 1 : 0 },
+        lastError: null,
+      },
+    });
+
+    if (lock.count !== 1) {
+      return null;
+    }
+
     await tx.articleAsset.update({
       where: { id: article.id },
       data: {
@@ -1254,14 +1359,9 @@ export async function createPublishArticleJob({
           },
         },
         publications: {
-          update: {
+          updateMany: {
             where: { id: publication.id },
-            data: {
-              status: queuedPublicationStatus,
-              lastError: activeDeviceReady
-                ? null
-                : "Agent offline at scheduled publish time",
-            },
+            data: { status: PublicationStatus.PUBLISHING },
           },
         },
       },
@@ -1270,19 +1370,44 @@ export async function createPublishArticleJob({
     return tx.agentJob.create({
       data: {
         userId,
-        agentDeviceId: activeDeviceReady ? activeDevice?.id : null,
+        agentDeviceId: activeDeviceReady ? selectedDevice?.id : null,
         type: AgentJobType.PUBLISH_ARTICLE,
         platform: config.slug,
-        payload: publishPayload,
+        payload: {
+          ...publishPayload,
+          trigger: mode,
+          plannedPublishAt: publication.scheduledAt?.toISOString() ?? null,
+        },
         status: AgentJobStatus.QUEUED,
       },
     });
   });
 
+  if (!job) {
+    scheduledLog({
+      event: "run-publication-job:skip-lock",
+      userId,
+      articleId: article.id,
+      publicationId: publication.id,
+      mode,
+      currentStatus: publication.status,
+    });
+
+    return {
+      status: "skipped" as const,
+      message: "Публикация уже запущена, опубликована или отменена.",
+      agentState: agent.state,
+      agentDevice: selectedDevice ? publicAgentDevice(selectedDevice) : null,
+      job: null,
+    };
+  }
+
   console.log("[agent-service] publish-job:created", {
     userId,
-    articleId,
-    agentDeviceId: activeDeviceReady ? activeDevice?.id ?? null : null,
+    articleId: article.id,
+    publicationId: publication.id,
+    mode,
+    agentDeviceId: activeDeviceReady ? selectedDevice?.id ?? null : null,
     jobId: job.id,
     type: job.type,
     platform: config.slug,
@@ -1290,11 +1415,11 @@ export async function createPublishArticleJob({
   });
   console.log("[agent-service] publication-status:updated", {
     userId,
-    articleId,
+    articleId: article.id,
     publicationId: publication.id,
-    status: queuedPublicationStatus,
+    status: PublicationStatus.PUBLISHING,
     assetStatus: AssetStatus.DISTRIBUTING,
-    reason: "publish_job_created",
+    reason: `${mode}_publish_job_created`,
   });
 
   return {
@@ -1304,7 +1429,7 @@ export async function createPublishArticleJob({
         ? publishBusyMessage()
         : "Задание публикации создано. FlowPost Agent выполнит публикацию в фоне.",
     agentState: agent.state,
-    agentDevice: activeDeviceReady && activeDevice ? publicAgentDevice(activeDevice) : null,
+    agentDevice: activeDeviceReady && selectedDevice ? publicAgentDevice(selectedDevice) : null,
     job: publicAgentJob(job),
   };
 }
@@ -1316,37 +1441,68 @@ export async function claimDueScheduledPublicationsForAgent(
   await cleanupStaleAgentJobs(device.userId);
 
   const now = new Date();
+  const triggerWindowEnd = new Date(now.getTime() + SCHEDULED_TRIGGER_LEAD_MS);
+  const retryWindowStart = new Date(now.getTime() - SCHEDULED_RETRY_WINDOW_MS);
   scheduledLog({
     event: "claim:start",
     userId: device.userId,
     deviceId: device.id,
-    "server now": now.toISOString(),
+    now: now.toISOString(),
+    triggerWindowEnd: triggerWindowEnd.toISOString(),
+    retryWindowStart: retryWindowStart.toISOString(),
   });
 
-  const due = await prisma.publication.findMany({
+  const expired = await prisma.publication.updateMany({
     where: {
       status: {
         in: [PublicationStatus.SCHEDULED, PublicationStatus.WAITING_AGENT],
       },
-      scheduledAt: { lte: now },
+      scheduledAt: { lt: retryWindowStart },
       workspace: {
         members: {
           some: { userId: device.userId },
         },
       },
     },
-    include: {
-      asset: {
-        include: {
-          workspace: { select: { id: true } },
-          brand: { select: { name: true, siteUrl: true } },
+    data: {
+      status: PublicationStatus.FAILED,
+      lockedAt: null,
+      processingAt: null,
+      lastError:
+        "Планер не смог запустить agent. Проверьте, что FlowPost Agent установлен и доступен.",
+    },
+  });
+
+  if (expired.count > 0) {
+    scheduledLog({
+      event: "claim:expired-failed",
+      userId: device.userId,
+      deviceId: device.id,
+      count: expired.count,
+      now: now.toISOString(),
+    });
+  }
+
+  const due = await prisma.publication.findMany({
+    where: {
+      status: {
+        in: [PublicationStatus.SCHEDULED, PublicationStatus.WAITING_AGENT],
+      },
+      scheduledAt: {
+        lte: triggerWindowEnd,
+        gt: retryWindowStart,
+      },
+      workspace: {
+        members: {
+          some: { userId: device.userId },
         },
       },
-      variant: {
-        include: {
-          platform: true,
-        },
-      },
+    },
+    select: {
+      id: true,
+      assetId: true,
+      scheduledAt: true,
+      status: true,
     },
     orderBy: {
       scheduledAt: "asc",
@@ -1359,162 +1515,76 @@ export async function claimDueScheduledPublicationsForAgent(
     userId: device.userId,
     deviceId: device.id,
     dueCount: due.length,
-    "server now": now.toISOString(),
+    now: now.toISOString(),
   });
 
   const jobs = [];
 
   for (const publication of due) {
     const scheduledAt = publication.scheduledAt;
-    const dueInSeconds = scheduledAt
+    const secondsUntilPublish = scheduledAt
       ? Math.round((scheduledAt.getTime() - now.getTime()) / 1000)
+      : null;
+    const triggerAt = scheduledAt
+      ? new Date(scheduledAt.getTime() - SCHEDULED_TRIGGER_LEAD_MS)
       : null;
 
     scheduledLog({
       event: "claim:candidate",
       articleId: publication.assetId,
       publicationId: publication.id,
-      "selected local time": scheduledAt?.toISOString() ?? null,
-      "saved UTC time": scheduledAt?.toISOString() ?? null,
-      "server now": now.toISOString(),
-      "due in seconds": dueInSeconds,
+      plannedPublishAt: scheduledAt?.toISOString() ?? null,
+      now: now.toISOString(),
+      secondsUntilPublish,
+      triggerAt: triggerAt?.toISOString() ?? null,
       status: publication.status,
     });
 
-    const config = getPlatformConfig(publication.variant.platform.slug);
-
-    if (!config) {
-      await prisma.publication.update({
-        where: { id: publication.id },
-        data: {
-          status: PublicationStatus.FAILED,
-          lockedAt: null,
-          lastError: "Эта площадка пока не поддерживается Agent.",
-        },
-      });
-      continue;
-    }
-
-    const account = await prisma.platformAccount.findUnique({
-      where: {
-        userId_platform: {
-          userId: device.userId,
-          platform: config.slug,
-        },
-      },
-    });
-
-    if (account?.status !== PlatformAccountStatus.CONNECTED) {
-      await prisma.publication.update({
-        where: { id: publication.id },
-        data: {
-          status: PublicationStatus.FAILED,
-          lockedAt: null,
-          lastError:
-            "Agent подключён, но площадка не подключена. Переподключите площадку и повторите публикацию.",
-        },
-      });
-      continue;
-    }
-
-    const existingJob = await prisma.agentJob.findFirst({
-      where: {
-        userId: device.userId,
-        type: { in: publishAgentJobTypes() },
-        status: {
-          in: [
-            AgentJobStatus.QUEUED,
-            AgentJobStatus.PICKED_UP,
-            AgentJobStatus.RUNNING,
-            AgentJobStatus.WAITING_USER_LOGIN,
-          ],
-        },
-        payload: {
-          path: ["publicationId"],
-          equals: publication.id,
-        },
-      },
-      orderBy: { createdAt: "asc" },
-    });
-
-    if (existingJob) {
-      scheduledLog({
-        event: "claim:skip-existing-job",
-        articleId: publication.assetId,
-        publicationId: publication.id,
-        jobId: existingJob.id,
-      });
-      continue;
-    }
-
-    const lock = await prisma.publication.updateMany({
-      where: {
-        id: publication.id,
-        status: {
-          in: [PublicationStatus.SCHEDULED, PublicationStatus.WAITING_AGENT],
-        },
-        scheduledAt: { lte: now },
-      },
-      data: {
-        status: PublicationStatus.PUBLISHING,
-        processingAt: now,
-        lockedAt: now,
-        retryCount: { increment: 1 },
-        lastError: null,
-      },
-    });
-
-    if (lock.count !== 1) {
-      scheduledLog({
-        event: "claim:skip-already-locked",
-        articleId: publication.assetId,
-        publicationId: publication.id,
-      });
-      continue;
-    }
-
-    const publishPayload = buildPublishArticlePayload({
-      article: publication.asset,
-      variant: publication.variant,
-      publication,
-      config,
+    const result = await runPublicationJob({
       userId: device.userId,
-    });
-
-    const job = await prisma.agentJob.create({
-      data: {
-        userId: device.userId,
-        agentDeviceId: device.id,
-        type: AgentJobType.SCHEDULED_PUBLISH,
-        platform: config.slug,
-        payload: publishPayload,
-        status: AgentJobStatus.QUEUED,
-      },
-    });
-
-    await prisma.articleAsset.update({
-      where: { id: publication.assetId },
-      data: {
-        status: AssetStatus.DISTRIBUTING,
-        variants: {
-          updateMany: {
-            where: { id: publication.variantId },
-            data: { status: VariantStatus.APPROVED },
-          },
+      publicationId: publication.id,
+      mode: "scheduled",
+      activeDevice: device,
+      expectedStatuses: [
+        PublicationStatus.SCHEDULED,
+        PublicationStatus.WAITING_AGENT,
+      ],
+      now,
+    }).catch(async (error: unknown) => {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Не удалось запустить agent для автопубликации.";
+      await prisma.publication.update({
+        where: { id: publication.id },
+        data: {
+          status: PublicationStatus.FAILED,
+          lockedAt: null,
+          processingAt: null,
+          lastError: message,
         },
-      },
+      });
+      scheduledLog({
+        event: "claim:trigger-result",
+        articleId: publication.assetId,
+        publicationId: publication.id,
+        result: "failed",
+        error: message,
+      });
+      return null;
     });
 
     scheduledLog({
-      event: "claim:job-created",
+      event: "claim:trigger-result",
       articleId: publication.assetId,
       publicationId: publication.id,
-      jobId: job.id,
-      status: PublicationStatus.PUBLISHING,
-      "server now": now.toISOString(),
+      result: result?.status ?? "failed",
+      jobId: result?.job?.id ?? null,
     });
 
-    jobs.push(publicAgentJob(job));
+    if (result?.job) {
+      jobs.push(result.job);
+    }
   }
 
   return {

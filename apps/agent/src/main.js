@@ -537,6 +537,13 @@ async function pollScheduledPublications() {
       agentNow: agentNow.toISOString(),
       queuedCount: result.queuedCount ?? 0,
       checkedAt: result.checkedAt ?? null,
+      jobs: Array.isArray(result.jobs)
+        ? result.jobs.map((job) => ({
+            id: job.id,
+            type: job.type,
+            status: job.status,
+          }))
+        : [],
     });
 
     if ((result.queuedCount ?? 0) > 0) {
@@ -561,7 +568,7 @@ function startPolling() {
   clearInterval(pollingTimer);
   clearInterval(scheduledTimer);
   pollingTimer = setInterval(() => void pollJobs(), 3000);
-  scheduledTimer = setInterval(() => void pollScheduledPublications(), 30_000);
+  scheduledTimer = setInterval(() => void pollScheduledPublications(), 10_000);
   startHeartbeat();
   void prewarmBrowser();
   void pollScheduledPublications();

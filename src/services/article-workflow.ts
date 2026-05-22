@@ -274,11 +274,36 @@ async function markArticleFailed(articleId: string, errorMessage: string) {
 }
 
 export async function publishDueScheduledArticles() {
+  const now = new Date();
+  const triggerWindowEnd = new Date(now.getTime() + 30 * 1000);
+  const retryWindowStart = new Date(now.getTime() - 2 * 60 * 1000);
+
+  const expired = await prisma.publication.updateMany({
+    where: {
+      status: {
+        in: [PublicationStatus.SCHEDULED, PublicationStatus.WAITING_AGENT],
+      },
+      scheduledAt: {
+        lt: retryWindowStart,
+      },
+    },
+    data: {
+      status: PublicationStatus.FAILED,
+      lockedAt: null,
+      processingAt: null,
+      lastError:
+        "Планер не смог запустить agent. Проверьте, что FlowPost Agent установлен и доступен.",
+    },
+  });
+
   const due = await prisma.publication.findMany({
     where: {
-      status: PublicationStatus.SCHEDULED,
+      status: {
+        in: [PublicationStatus.SCHEDULED, PublicationStatus.WAITING_AGENT],
+      },
       scheduledAt: {
-        lte: new Date(),
+        lte: triggerWindowEnd,
+        gt: retryWindowStart,
       },
     },
     include: {
@@ -297,16 +322,64 @@ export async function publishDueScheduledArticles() {
       continue;
     }
 
-    await publishArticleForUser(userId, publication.assetId, {
-      allowOfflineQueue: true,
-    }).catch(
-      (error: unknown) => {
+    const secondsUntilPublish = publication.scheduledAt
+      ? Math.round((publication.scheduledAt.getTime() - now.getTime()) / 1000)
+      : null;
+    const triggerAt = publication.scheduledAt
+      ? new Date(publication.scheduledAt.getTime() - 30 * 1000)
+      : null;
+
+    console.log("[Scheduler]", {
+      event: "cron:candidate",
+      now: now.toISOString(),
+      plannedPublishAt: publication.scheduledAt?.toISOString() ?? null,
+      secondsUntilPublish,
+      triggerAt: triggerAt?.toISOString() ?? null,
+      publicationId: publication.id,
+      articleId: publication.assetId,
+    });
+
+    const { runPublicationJob } = await import(
+      "@/features/agent/server/agent-service"
+    );
+
+    const result = await runPublicationJob({
+      userId,
+      publicationId: publication.id,
+      mode: "scheduled",
+      expectedStatuses: [
+        PublicationStatus.SCHEDULED,
+        PublicationStatus.WAITING_AGENT,
+      ],
+      now,
+    }).catch(async (error: unknown) => {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Не удалось запустить agent для автопубликации.";
+      await prisma.publication.update({
+        where: { id: publication.id },
+        data: {
+          status: PublicationStatus.FAILED,
+          lockedAt: null,
+          processingAt: null,
+          lastError: message,
+        },
+      });
         logArticleError("scheduler:publish-failed", error, {
           articleId: publication.assetId,
+          publicationId: publication.id,
         });
-      },
-    );
+      return null;
+    });
+
+    console.log("[Scheduler]", {
+      event: "cron:trigger-result",
+      publicationId: publication.id,
+      result: result?.status ?? "failed",
+      jobId: result?.job?.id ?? null,
+    });
   }
 
-  return { processed: due.length };
+  return { processed: due.length, expired: expired.count };
 }

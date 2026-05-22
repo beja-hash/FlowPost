@@ -14,7 +14,7 @@ const PROTECTED_PATHS = [
   "/content",
 ];
 
-const AUTH_PATHS = ["/sign-in"];
+const AUTH_PATHS = ["/sign-in", "/register"];
 
 function matchesPath(pathname: string, paths: string[]) {
   return paths.some((path) => pathname === path || pathname.startsWith(`${path}/`));
@@ -63,5 +63,6 @@ export const config = {
     "/analytics/:path*",
     "/settings/:path*",
     "/sign-in",
+    "/register",
   ],
 };

@@ -1,18 +1,17 @@
 import { redirect } from "next/navigation";
-import Link from "next/link";
 
 import { Brand } from "@/components/brand";
-import { GoogleSignInButton } from "@/features/auth/components/google-sign-in-button";
-import { SignInForm } from "@/features/auth/components/sign-in-form";
-import { auth } from "@/infrastructure/auth/session";
 import { Card, CardContent } from "@/components/ui/card";
+import { GoogleSignInButton } from "@/features/auth/components/google-sign-in-button";
+import { RegisterForm } from "@/features/auth/components/register-form";
+import { auth } from "@/infrastructure/auth/session";
 import { debugLog } from "@/lib/debug-log";
 
-export default async function SignInPage() {
+export default async function RegisterPage() {
   const session = await auth();
 
   if (session?.user?.id) {
-    debugLog("[auth:sign-in-page] redirect authenticated user to /dashboard", {
+    debugLog("[auth:register-page] redirect authenticated user to /dashboard", {
       userId: session.user.id,
     });
     redirect("/dashboard");
@@ -28,23 +27,13 @@ export default async function SignInPage() {
 
           <div className="text-center">
             <h1 className="font-heading text-3xl font-semibold tracking-tight">
-              Вход в аккаунт
+              Создать аккаунт
             </h1>
           </div>
 
-          <SignInForm />
+          <GoogleSignInButton>Продолжить через Google</GoogleSignInButton>
 
-          <GoogleSignInButton />
-
-          <p className="text-center text-sm text-muted-foreground">
-            Нет аккаунта?{" "}
-            <Link
-              href="/register"
-              className="font-medium text-foreground transition-colors hover:text-primary"
-            >
-              Создать
-            </Link>
-          </p>
+          <RegisterForm />
         </CardContent>
       </Card>
     </div>
