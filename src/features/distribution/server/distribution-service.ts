@@ -417,6 +417,57 @@ function deriveVariantStatus(publicationStatus?: PublicationStatus | null) {
   return VariantStatus.APPROVED;
 }
 
+function logSchedulePersistence({
+  userId,
+  articleId,
+  publicationId,
+  selectedLocalTime,
+  scheduledAt,
+  status,
+}: {
+  userId: string;
+  articleId: string;
+  publicationId?: string | null;
+  selectedLocalTime?: string | null;
+  scheduledAt: Date | null;
+  status: PublicationStatus;
+}) {
+  const serverNow = new Date();
+
+  console.log("[Scheduler] selected local time", {
+    userId,
+    articleId,
+    publicationId: publicationId ?? null,
+    selectedLocalTime: selectedLocalTime ?? scheduledAt?.toISOString() ?? null,
+  });
+  console.log("[Scheduler] saved UTC time", {
+    userId,
+    articleId,
+    publicationId: publicationId ?? null,
+    savedUtcTime: scheduledAt?.toISOString() ?? null,
+  });
+  console.log("[Scheduler] server now", {
+    userId,
+    articleId,
+    publicationId: publicationId ?? null,
+    serverNow: serverNow.toISOString(),
+  });
+  console.log("[Scheduler] due in seconds", {
+    userId,
+    articleId,
+    publicationId: publicationId ?? null,
+    dueInSeconds: scheduledAt
+      ? Math.round((scheduledAt.getTime() - serverNow.getTime()) / 1000)
+      : null,
+  });
+  console.log("[Scheduler] status", {
+    userId,
+    articleId,
+    publicationId: publicationId ?? null,
+    status,
+  });
+}
+
 export async function listPlatformOptions(): Promise<PlatformOption[]> {
   try {
     await ensureDefaultPlatforms();
@@ -706,7 +757,7 @@ export async function createDistributionAsset(
       );
     }
 
-    await tx.publication.create({
+    const publication = await tx.publication.create({
       data: {
         workspaceId: workspace.id,
         brandId: brand.id,
@@ -716,6 +767,15 @@ export async function createDistributionAsset(
         status: publicationStatus,
         scheduledAt,
       },
+    });
+
+    logSchedulePersistence({
+      userId,
+      articleId: asset.id,
+      publicationId: publication.id,
+      selectedLocalTime: payload.scheduledAt,
+      scheduledAt,
+      status: publicationStatus,
     });
 
     await tx.brand.update({
@@ -866,7 +926,7 @@ export async function updateDistributionAsset(
       },
     });
 
-    await tx.publication.update({
+    const publication = await tx.publication.update({
       where: {
         id: currentPublication.id,
       },
@@ -919,6 +979,17 @@ export async function updateDistributionAsset(
         },
       },
     });
+
+    if (payload.scheduledAt !== undefined || payload.publicationStatus !== undefined) {
+      logSchedulePersistence({
+        userId,
+        articleId: existing.id,
+        publicationId: publication.id,
+        selectedLocalTime: payload.scheduledAt,
+        scheduledAt: nextScheduledAt,
+        status: nextPublicationStatus,
+      });
+    }
 
     return mapAsset(record);
   });

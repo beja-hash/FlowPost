@@ -75,6 +75,7 @@ enum VariantStatus {
 enum PublicationStatus {
   PLANNED
   SCHEDULED
+  PUBLISHING
   PUBLISHED
   FAILED
   CANCELED
@@ -143,6 +144,7 @@ enum AgentJobType {
   OPEN_PLATFORM
   RECONNECT_PLATFORM
   PUBLISH_ARTICLE
+  SCHEDULED_PUBLISH
 }
 
 enum AgentJobStatus {
@@ -550,6 +552,9 @@ model Publication {
   trackingUrl String?           @db.VarChar(2048)
   clickCount  Int               @default(0)
   leadCount   Int               @default(0)
+  processingAt DateTime?
+  lockedAt    DateTime?
+  retryCount  Int               @default(0)
   lastError   String?           @db.Text
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
@@ -563,6 +568,7 @@ model Publication {
   @@index([workspaceId, status, scheduledAt])
   @@index([brandId, status, updatedAt])
   @@index([platformId, status, publishedAt])
+  @@index([status, scheduledAt, lockedAt])
 }
 
 model Session {

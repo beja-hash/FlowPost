@@ -277,13 +277,66 @@ export async function scheduleArticleForUser(
   userId: string,
   articleId: string,
   publishAt: string,
+  diagnostics: {
+    selectedLocalTime?: string | null;
+    browserTimezone?: string | null;
+  } = {},
 ) {
   const { article, variant, publication } = await getArticleForUser(userId, articleId);
   const scheduledAt = new Date(publishAt);
+  const serverNow = new Date();
 
   if (Number.isNaN(scheduledAt.getTime())) {
     throw new ArticleWorkflowError(400, "INVALID_PUBLISH_AT", "Invalid publishAt.");
   }
+
+  if (scheduledAt.getTime() < serverNow.getTime()) {
+    throw new ArticleWorkflowError(
+      400,
+      "PUBLISH_AT_IN_PAST",
+      "Нельзя запланировать публикацию на прошедшее время.",
+    );
+  }
+
+  if (scheduledAt.getTime() - serverNow.getTime() < 2 * 60 * 1000) {
+    throw new ArticleWorkflowError(
+      400,
+      "PUBLISH_AT_TOO_SOON",
+      "Слишком близкое время. Лучше выбрать минимум через 5 минут, чтобы агент успел обработать задачу.",
+    );
+  }
+
+  console.log("[Scheduler] selected local time", {
+    userId,
+    articleId,
+    publicationId: publication.id,
+    selectedLocalTime: diagnostics.selectedLocalTime ?? publishAt,
+    browserTimezone: diagnostics.browserTimezone ?? null,
+  });
+  console.log("[Scheduler] saved UTC time", {
+    userId,
+    articleId,
+    publicationId: publication.id,
+    savedUtcTime: scheduledAt.toISOString(),
+  });
+  console.log("[Scheduler] server now", {
+    userId,
+    articleId,
+    publicationId: publication.id,
+    serverNow: serverNow.toISOString(),
+  });
+  console.log("[Scheduler] due in seconds", {
+    userId,
+    articleId,
+    publicationId: publication.id,
+    dueInSeconds: Math.round((scheduledAt.getTime() - serverNow.getTime()) / 1000),
+  });
+  console.log("[Scheduler] status", {
+    userId,
+    articleId,
+    publicationId: publication.id,
+    status: PublicationStatus.SCHEDULED,
+  });
 
   await prisma.$transaction([
     prisma.articleAsset.update({

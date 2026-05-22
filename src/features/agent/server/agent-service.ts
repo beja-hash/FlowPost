@@ -110,6 +110,14 @@ function publishAgentJobTypes() {
   return availableAgentJobTypes(["PUBLISH_ARTICLE", "SCHEDULED_PUBLISH"]);
 }
 
+function isPublishAgentJobType(type: AgentJobType) {
+  return publishAgentJobTypes().includes(type);
+}
+
+function scheduledLog(context: Record<string, unknown>) {
+  console.log("[Scheduler]", context);
+}
+
 function parseActionStartedAt(value?: string | Date | null) {
   if (!value) {
     return null;
@@ -883,6 +891,70 @@ export async function createConnectPlatformJob({
   };
 }
 
+function buildPublishArticlePayload({
+  article,
+  variant,
+  publication,
+  config,
+  userId,
+  strategyTaskId,
+}: {
+  article: {
+    id: string;
+    brandId: string;
+    title: string;
+    canonicalBody: string;
+    ctaText: string | null;
+    ctaUrl: string | null;
+    workspace: { id: string };
+    brand: { name: string; siteUrl: string };
+  };
+  variant: {
+    id: string;
+  };
+  publication: {
+    id: string;
+  };
+  config: NonNullable<ReturnType<typeof getPlatformConfig>>;
+  userId: string;
+  strategyTaskId?: string | null;
+}) {
+  const resolvedCta = resolveArticleCta({
+    ctaText: article.ctaText,
+    ctaUrl: article.ctaUrl,
+    brandName: article.brand.name,
+    brandUrl: article.brand.siteUrl,
+  });
+  const cleanedBody = cleanupGeneratedArticleContent(article.canonicalBody, {
+    ctaText: resolvedCta.ctaText,
+    ctaUrl: resolvedCta.ctaUrl,
+    brandName: article.brand.name,
+    brandUrl: article.brand.siteUrl,
+    productBlockEnabled: true,
+  });
+  const body = formatArticleForPlatform(cleanedBody, config.slug);
+
+  return {
+    articleId: article.id,
+    publicationId: publication.id,
+    variantId: variant.id,
+    brandId: article.brandId,
+    workspaceId: article.workspace.id,
+    userId,
+    strategyTaskId: strategyTaskId ?? null,
+    platform: config.slug,
+    platformName: config.name,
+    platformEditorUrl: config.editorUrl,
+    editorUrl: config.editorUrl,
+    title: article.title,
+    content: body,
+    body,
+    ctaText: resolvedCta.ctaText,
+    ctaUrl: resolvedCta.ctaUrl,
+    brandName: article.brand.name,
+  };
+}
+
 export async function createPublishArticleJob({
   userId,
   articleId,
@@ -1078,39 +1150,14 @@ export async function createPublishArticleJob({
     };
   }
 
-  const resolvedCta = resolveArticleCta({
-    ctaText: article.ctaText,
-    ctaUrl: article.ctaUrl,
-    brandName: article.brand.name,
-    brandUrl: article.brand.siteUrl,
-  });
-  const cleanedBody = cleanupGeneratedArticleContent(article.canonicalBody, {
-    ctaText: resolvedCta.ctaText,
-    ctaUrl: resolvedCta.ctaUrl,
-    brandName: article.brand.name,
-    brandUrl: article.brand.siteUrl,
-    productBlockEnabled: true,
-  });
-  const body = formatArticleForPlatform(cleanedBody, config.slug);
-  const publishPayload = {
-    articleId: article.id,
-    publicationId: publication.id,
-    variantId: variant.id,
-    brandId: article.brandId,
-    workspaceId: article.workspace.id,
+  const publishPayload = buildPublishArticlePayload({
+    article,
+    variant,
+    publication,
+    config,
     userId,
-    strategyTaskId: strategyTaskId ?? null,
-    platform: config.slug,
-    platformName: config.name,
-    platformEditorUrl: config.editorUrl,
-    editorUrl: config.editorUrl,
-    title: article.title,
-    content: body,
-    body,
-    ctaText: resolvedCta.ctaText,
-    ctaUrl: resolvedCta.ctaUrl,
-    brandName: article.brand.name,
-  };
+    strategyTaskId,
+  });
   const job = await prisma.$transaction(async (tx) => {
     await tx.articleAsset.update({
       where: { id: article.id },
@@ -1170,6 +1217,188 @@ export async function createPublishArticleJob({
     agentState: agent.state,
     agentDevice: activeDeviceReady && activeDevice ? publicAgentDevice(activeDevice) : null,
     job: publicAgentJob(job),
+  };
+}
+
+export async function claimDueScheduledPublicationsForAgent(
+  authorization: string | null,
+) {
+  const device = await authenticateAgent(authorization);
+  await cleanupStaleAgentJobs(device.userId);
+
+  const now = new Date();
+  scheduledLog({
+    event: "claim:start",
+    userId: device.userId,
+    deviceId: device.id,
+    "server now": now.toISOString(),
+  });
+
+  const due = await prisma.publication.findMany({
+    where: {
+      status: PublicationStatus.SCHEDULED,
+      scheduledAt: { lte: now },
+      workspace: {
+        members: {
+          some: { userId: device.userId },
+        },
+      },
+    },
+    include: {
+      asset: {
+        include: {
+          workspace: { select: { id: true } },
+          brand: { select: { name: true, siteUrl: true } },
+        },
+      },
+      variant: {
+        include: {
+          platform: true,
+        },
+      },
+    },
+    orderBy: {
+      scheduledAt: "asc",
+    },
+    take: 5,
+  });
+
+  scheduledLog({
+    event: "claim:due-found",
+    userId: device.userId,
+    deviceId: device.id,
+    dueCount: due.length,
+    "server now": now.toISOString(),
+  });
+
+  const jobs = [];
+
+  for (const publication of due) {
+    const scheduledAt = publication.scheduledAt;
+    const dueInSeconds = scheduledAt
+      ? Math.round((scheduledAt.getTime() - now.getTime()) / 1000)
+      : null;
+
+    scheduledLog({
+      event: "claim:candidate",
+      articleId: publication.assetId,
+      publicationId: publication.id,
+      "selected local time": scheduledAt?.toISOString() ?? null,
+      "saved UTC time": scheduledAt?.toISOString() ?? null,
+      "server now": now.toISOString(),
+      "due in seconds": dueInSeconds,
+      status: publication.status,
+    });
+
+    const config = getPlatformConfig(publication.variant.platform.slug);
+
+    if (!config) {
+      await prisma.publication.update({
+        where: { id: publication.id },
+        data: {
+          status: PublicationStatus.FAILED,
+          lockedAt: null,
+          lastError: "Эта площадка пока не поддерживается Agent.",
+        },
+      });
+      continue;
+    }
+
+    const account = await prisma.platformAccount.findUnique({
+      where: {
+        userId_platform: {
+          userId: device.userId,
+          platform: config.slug,
+        },
+      },
+    });
+
+    if (account?.status !== PlatformAccountStatus.CONNECTED) {
+      await prisma.publication.update({
+        where: { id: publication.id },
+        data: {
+          status: PublicationStatus.FAILED,
+          lockedAt: null,
+          lastError:
+            "Agent подключён, но площадка не подключена. Переподключите площадку и повторите публикацию.",
+        },
+      });
+      continue;
+    }
+
+    const lock = await prisma.publication.updateMany({
+      where: {
+        id: publication.id,
+        status: PublicationStatus.SCHEDULED,
+        scheduledAt: { lte: now },
+      },
+      data: {
+        status: PublicationStatus.PUBLISHING,
+        processingAt: now,
+        lockedAt: now,
+        retryCount: { increment: 1 },
+        lastError: null,
+      },
+    });
+
+    if (lock.count !== 1) {
+      scheduledLog({
+        event: "claim:skip-already-locked",
+        articleId: publication.assetId,
+        publicationId: publication.id,
+      });
+      continue;
+    }
+
+    const publishPayload = buildPublishArticlePayload({
+      article: publication.asset,
+      variant: publication.variant,
+      publication,
+      config,
+      userId: device.userId,
+    });
+
+    const job = await prisma.agentJob.create({
+      data: {
+        userId: device.userId,
+        agentDeviceId: device.id,
+        type: AgentJobType.SCHEDULED_PUBLISH,
+        platform: config.slug,
+        payload: publishPayload,
+        status: AgentJobStatus.QUEUED,
+      },
+    });
+
+    await prisma.articleAsset.update({
+      where: { id: publication.assetId },
+      data: {
+        status: AssetStatus.DISTRIBUTING,
+        variants: {
+          updateMany: {
+            where: { id: publication.variantId },
+            data: { status: VariantStatus.APPROVED },
+          },
+        },
+      },
+    });
+
+    scheduledLog({
+      event: "claim:job-created",
+      articleId: publication.assetId,
+      publicationId: publication.id,
+      jobId: job.id,
+      status: PublicationStatus.PUBLISHING,
+      "server now": now.toISOString(),
+    });
+
+    jobs.push(publicAgentJob(job));
+  }
+
+  return {
+    ok: true,
+    checkedAt: now.toISOString(),
+    queuedCount: jobs.length,
+    jobs,
   };
 }
 
@@ -1337,6 +1566,40 @@ export async function updateAgentJobStatus({
       jobType: updatedJob.type,
       platform: updatedJob.platform,
     });
+
+    if (isPublishAgentJobType(updatedJob.type)) {
+      const payload = updatedJob.payload as {
+        articleId?: string;
+        publicationId?: string;
+      };
+
+      if (payload.articleId) {
+        await prisma.articleAsset.update({
+          where: { id: payload.articleId },
+          data: {
+            status: AssetStatus.DISTRIBUTING,
+            publications: {
+              updateMany: {
+                where: payload.publicationId ? { id: payload.publicationId } : {},
+                data: {
+                  status: PublicationStatus.PUBLISHING,
+                  processingAt: now,
+                  lockedAt: now,
+                  lastError: null,
+                },
+              },
+            },
+          },
+        });
+        console.log("[agent-service] publication-status:updated", {
+          userId: updatedJob.userId,
+          articleId: payload.articleId,
+          publicationId: payload.publicationId ?? null,
+          status: PublicationStatus.PUBLISHING,
+          jobId: updatedJob.id,
+        });
+      }
+    }
   }
 
   if (updatedJob.status === AgentJobStatus.COMPLETED) {
@@ -1388,7 +1651,7 @@ export async function updateAgentJobStatus({
   }
 
   if (
-    updatedJob.type === AgentJobType.PUBLISH_ARTICLE &&
+    isPublishAgentJobType(updatedJob.type) &&
     updatedJob.status === AgentJobStatus.COMPLETED
   ) {
     const payload = updatedJob.payload as {
@@ -1419,6 +1682,7 @@ export async function updateAgentJobStatus({
                 status: PublicationStatus.PUBLISHED,
                 publishedAt: now,
                 externalUrl: resultPayload?.publishedUrl ?? null,
+                lockedAt: null,
                 lastError: null,
               },
             },
@@ -1449,7 +1713,7 @@ export async function updateAgentJobStatus({
   }
 
   if (
-    updatedJob.type === AgentJobType.PUBLISH_ARTICLE &&
+    isPublishAgentJobType(updatedJob.type) &&
     updatedJob.status === AgentJobStatus.FAILED
   ) {
     const payload = updatedJob.payload as {
@@ -1477,6 +1741,7 @@ export async function updateAgentJobStatus({
               where: payload.publicationId ? { id: payload.publicationId } : {},
               data: {
                 status: PublicationStatus.FAILED,
+                lockedAt: null,
                 lastError: friendlyError,
               },
             },

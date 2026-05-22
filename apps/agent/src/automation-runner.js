@@ -1004,17 +1004,74 @@ function createAutomationRunner({ app, sendState, logJob }) {
     }
   }
 
-  async function selectTextInEditable(page, locator, text) {
-    const selected = await locator.evaluate((root, targetText) => {
+  function normalizeUrlForCompare(value) {
+    return String(value || "")
+      .trim()
+      .replace(/\/+$/, "")
+      .toLowerCase();
+  }
+
+  function logCtaLink(platform, event, extra = {}) {
+    console.log("[CTA Link]", {
+      platform,
+      event,
+      ...extra,
+    });
+  }
+
+  async function markCtaEditor(editorLocator) {
+    await editorLocator
+      .evaluate((root) => {
+        root.setAttribute("data-flowpost-cta-editor", "true");
+      })
+      .catch(() => undefined);
+  }
+
+  async function selectTextInEditable(page, locator, text, platform) {
+    const result = await locator.evaluate((root, targetText) => {
       const needle = String(targetText || "").trim();
-      if (!needle) return false;
+      if (!needle) {
+        return { success: false, reason: "empty_target" };
+      }
+
+      const lowerNeedle = needle.toLowerCase();
+      const rootText =
+        "value" in root && typeof root.value === "string"
+          ? root.value
+          : root.innerText || root.textContent || "";
+
+      if (!rootText.toLowerCase().includes(lowerNeedle)) {
+        return {
+          success: false,
+          reason: "text_not_found_in_editor",
+          editorTextSample: rootText.slice(0, 300),
+        };
+      }
+
+      root.focus?.({ preventScroll: true });
+
+      if (
+        (root instanceof HTMLTextAreaElement ||
+          root instanceof HTMLInputElement) &&
+        typeof root.setSelectionRange === "function"
+      ) {
+        const index = root.value.toLowerCase().indexOf(lowerNeedle);
+        root.setSelectionRange(index, index + needle.length);
+        root.dispatchEvent(new Event("select", { bubbles: true }));
+        document.dispatchEvent(new Event("selectionchange", { bubbles: true }));
+        return {
+          success: true,
+          mode: "input_selection",
+          selectedText: root.value.slice(index, index + needle.length),
+        };
+      }
 
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
       let node = walker.nextNode();
 
       while (node) {
         const value = node.nodeValue || "";
-        const index = value.toLowerCase().indexOf(needle.toLowerCase());
+        const index = value.toLowerCase().indexOf(lowerNeedle);
         if (index >= 0) {
           const range = document.createRange();
           range.setStart(node, index);
@@ -1022,22 +1079,65 @@ function createAutomationRunner({ app, sendState, logJob }) {
           const selection = window.getSelection();
           selection?.removeAllRanges();
           selection?.addRange(range);
-          return true;
+          const element =
+            node.parentElement ||
+            (node.parentNode instanceof Element ? node.parentNode : root);
+          element.scrollIntoView?.({ block: "center", inline: "center" });
+          const rect = range.getBoundingClientRect();
+          const eventOptions = {
+            bubbles: true,
+            cancelable: true,
+            clientX: rect.left + rect.width / 2,
+            clientY: rect.top + rect.height / 2,
+          };
+          root.dispatchEvent(new Event("focus", { bubbles: true }));
+          document.dispatchEvent(new Event("selectionchange", { bubbles: true }));
+          element.dispatchEvent(new MouseEvent("mouseup", eventOptions));
+          element.dispatchEvent(new MouseEvent("pointerup", eventOptions));
+          return {
+            success: selection?.toString().trim().toLowerCase() === lowerNeedle,
+            mode: "dom_range",
+            selectedText: selection?.toString() || "",
+            rect: {
+              top: rect.top,
+              right: rect.right,
+              bottom: rect.bottom,
+              left: rect.left,
+              width: rect.width,
+              height: rect.height,
+            },
+          };
         }
         node = walker.nextNode();
       }
 
-      return false;
-    }, text);
-    if (selected) {
-      await page.waitForTimeout(300);
+      return { success: false, reason: "text_node_not_found" };
+    }, text).catch((error) => ({
+      success: false,
+      reason: error instanceof Error ? error.message : String(error),
+    }));
+
+    logCtaLink(platform, "selected text success", {
+      ctaText: text,
+      success: Boolean(result.success),
+      mode: result.mode ?? null,
+      selectedText: result.selectedText ?? null,
+      reason: result.reason ?? null,
+    });
+
+    if (result.success) {
+      await page.waitForTimeout(700);
     }
-    return selected;
+    return Boolean(result.success);
   }
 
-  async function clickDzenFloatingToolbarLinkButton(page) {
-    const clicked = await page
-      .evaluate(() => {
+  async function clickFloatingToolbarLinkButton(page, platform) {
+    const deadline = Date.now() + 5000;
+    let lastResult = null;
+
+    while (Date.now() < deadline) {
+      const result = await page
+        .evaluate((currentPlatform) => {
         const visible = (element) => {
           const rect = element.getBoundingClientRect();
           const style = window.getComputedStyle(element);
@@ -1049,144 +1149,137 @@ function createAutomationRunner({ app, sendState, logJob }) {
             style.opacity !== "0"
           );
         };
-        const namedButton = Array.from(document.querySelectorAll("button")).find((button) => {
-          if (!visible(button)) return false;
-          const label = [
-            button.getAttribute("aria-label"),
-            button.getAttribute("title"),
-            button.textContent,
-          ]
+
+          const selection = window.getSelection();
+          const rangeRect =
+            selection && selection.rangeCount > 0
+              ? selection.getRangeAt(0).getBoundingClientRect()
+              : null;
+
+          const skipButtonText =
+            /опубликовать|публиковать|создать|написать|войти|готово|сохранить|отмена|publish|create|login|save|cancel/i;
+
+          const buttons = Array.from(
+            document.querySelectorAll("button, [role='button'], a[role='button']"),
+          )
+            .filter((button) => visible(button))
+            .map((button) => {
+              const rect = button.getBoundingClientRect();
+              const svgText = Array.from(button.querySelectorAll("svg, path, use"))
+                .map((node) =>
+                  [
+                    node.getAttribute("aria-label"),
+                    node.getAttribute("data-testid"),
+                    node.getAttribute("data-icon"),
+                    node.getAttribute("href"),
+                    node.getAttribute("xlink:href"),
+                    node.getAttribute("class"),
+                    node.getAttribute("d"),
+                  ]
+                    .filter(Boolean)
+                    .join(" "),
+                )
+                .join(" ");
+              const label = [
+                button.getAttribute("aria-label"),
+                button.getAttribute("title"),
+                button.getAttribute("data-testid"),
+                button.getAttribute("data-qa"),
+                button.getAttribute("class"),
+                button.textContent,
+                svgText,
+              ]
             .filter(Boolean)
             .join(" ")
             .toLowerCase();
-          return /ссыл|link/.test(label);
+              const nearSelection = rangeRect
+                ? rect.bottom < rangeRect.top + 220 &&
+                  rect.top > rangeRect.top - 260 &&
+                  rect.left < rangeRect.right + 620 &&
+                  rect.right > rangeRect.left - 620
+                : false;
+              const compactToolbarButton =
+                rect.width >= 18 &&
+                rect.width <= 72 &&
+                rect.height >= 18 &&
+                rect.height <= 72;
+
+              return {
+                button,
+                rect,
+                label,
+                nearSelection,
+                compactToolbarButton,
+                text: button.textContent || "",
+              };
+            })
+            .filter(({ label, text }) => !skipButtonText.test(`${label} ${text}`));
+
+          const linkPattern =
+            currentPlatform === "dzen"
+              ? /(^|\s|_|-)(link|chain|url|href)(\s|_|-|$)|ссыл/i
+              : /(^|\s|_|-)(link|chain|url|href)(\s|_|-|$)|ссыл/i;
+          const linkButton =
+            buttons.find(
+              ({ label, nearSelection }) =>
+                nearSelection && linkPattern.test(label),
+            ) ?? buttons.find(({ label }) => linkPattern.test(label));
+
+          if (linkButton) {
+            linkButton.button.click();
+            return {
+              clicked: true,
+              reason: "link_button",
+              label: linkButton.label.slice(0, 160),
+              nearSelection: linkButton.nearSelection,
+              buttonCount: buttons.length,
+            };
+          }
+
+          return {
+            clicked: false,
+            reason: rangeRect ? "link_button_not_found" : "selection_not_visible",
+            buttonCount: buttons.length,
+            selectionText: selection?.toString() || "",
+          };
+        }, platform)
+        .catch((error) => ({
+          clicked: false,
+          reason: error instanceof Error ? error.message : String(error),
+        }));
+
+      lastResult = result;
+
+      if (result.clicked) {
+        logCtaLink(platform, "toolbar button found", {
+          found: true,
+          reason: result.reason,
+          label: result.label ?? null,
+          nearSelection: result.nearSelection ?? null,
         });
-        if (namedButton) {
-          namedButton.click();
-          return true;
-        }
+        await humanDelay(300, 700);
+        return true;
+      }
 
-        const selection = window.getSelection();
-        if (!selection || selection.rangeCount === 0) return false;
-        const rangeRect = selection.getRangeAt(0).getBoundingClientRect();
-        const selectedButtons = Array.from(document.querySelectorAll("button"))
-          .filter((button) => visible(button))
-          .map((button) => {
-            const rect = button.getBoundingClientRect();
-            const svgText = Array.from(button.querySelectorAll("svg, path, use"))
-              .map((node) =>
-                [
-                  node.getAttribute("aria-label"),
-                  node.getAttribute("data-testid"),
-                  node.getAttribute("href"),
-                  node.getAttribute("xlink:href"),
-                  node.getAttribute("class"),
-                ]
-                  .filter(Boolean)
-                  .join(" "),
-              )
-              .join(" ")
-              .toLowerCase();
-            return { button, rect, svgText };
-          })
-          .filter(({ rect }) => {
-            const nearSelection =
-              rect.bottom < rangeRect.top + 160 &&
-              rect.top > rangeRect.top - 180 &&
-              rect.left < rangeRect.right + 420 &&
-              rect.right > rangeRect.left - 420;
-            return nearSelection;
-          });
-
-        const linkIcon = selectedButtons.find(({ svgText }) => /link|chain|ссыл/.test(svgText));
-        if (linkIcon) {
-          linkIcon.button.click();
-          return true;
-        }
-
-        return false;
-      })
-      .catch(() => false);
-
-    if (clicked) {
-      await humanDelay(300, 700);
+      await page.waitForTimeout(350);
     }
-    return clicked;
+
+    logCtaLink(platform, "toolbar button found", {
+      found: false,
+      reason: lastResult?.reason ?? "timeout",
+      buttonCount: lastResult?.buttonCount ?? null,
+      selectionText: lastResult?.selectionText ?? null,
+    });
+
+    return false;
+  }
+
+  async function clickDzenFloatingToolbarLinkButton(page) {
+    return clickFloatingToolbarLinkButton(page, "dzen");
   }
 
   async function clickVcFloatingToolbarLinkButton(page) {
-    const clicked = await page
-      .evaluate(() => {
-        const visible = (element) => {
-          const rect = element.getBoundingClientRect();
-          const style = window.getComputedStyle(element);
-          return (
-            rect.width > 0 &&
-            rect.height > 0 &&
-            style.visibility !== "hidden" &&
-            style.display !== "none" &&
-            style.opacity !== "0"
-          );
-        };
-        const selection = window.getSelection();
-        const rangeRect =
-          selection && selection.rangeCount > 0
-            ? selection.getRangeAt(0).getBoundingClientRect()
-            : null;
-        const buttons = Array.from(document.querySelectorAll("button, [role='button']"))
-          .filter((button) => visible(button))
-          .map((button) => {
-            const rect = button.getBoundingClientRect();
-            const label = [
-              button.getAttribute("aria-label"),
-              button.getAttribute("title"),
-              button.textContent,
-              ...Array.from(button.querySelectorAll("svg, path, use")).map((node) =>
-                [
-                  node.getAttribute("aria-label"),
-                  node.getAttribute("data-testid"),
-                  node.getAttribute("href"),
-                  node.getAttribute("xlink:href"),
-                  node.getAttribute("class"),
-                ]
-                  .filter(Boolean)
-                  .join(" "),
-              ),
-            ]
-              .filter(Boolean)
-              .join(" ")
-              .toLowerCase();
-            return { button, rect, label };
-          });
-        const namedButton = buttons.find(({ label }) => /ссыл|link|chain/.test(label));
-        if (namedButton) {
-          namedButton.button.click();
-          return true;
-        }
-
-        if (!rangeRect) return false;
-        const toolbarButtons = buttons.filter(({ rect }) => {
-          const nearSelection =
-            rect.bottom < rangeRect.top + 180 &&
-            rect.top > rangeRect.top - 220 &&
-            rect.left < rangeRect.right + 520 &&
-            rect.right > rangeRect.left - 520;
-          return nearSelection;
-        });
-        const linkIcon = toolbarButtons.find(({ label }) => /ссыл|link|chain/.test(label));
-        if (linkIcon) {
-          linkIcon.button.click();
-          return true;
-        }
-
-        return false;
-      })
-      .catch(() => false);
-
-    if (clicked) {
-      await humanDelay(300, 700);
-    }
-    return clicked;
+    return clickFloatingToolbarLinkButton(page, "vc");
   }
 
   async function openEditorLinkTool(page, platform) {
@@ -1211,13 +1304,36 @@ function createAutomationRunner({ app, sendState, logJob }) {
   }
 
   async function findSafeLinkInput(page, platform, text) {
+    const candidates = [
+      { locator: page.locator('input[type="url"]:visible'), timeout: 1200 },
+      {
+        locator: page.locator(
+          'input[placeholder*="https" i]:visible, input[placeholder*="url" i]:visible, input[placeholder*="ссыл" i]:visible',
+        ),
+        timeout: 1200,
+      },
+      {
+        locator: page.locator(
+          'input[aria-label*="ссыл" i]:visible, input[aria-label*="url" i]:visible, input[aria-label*="link" i]:visible',
+        ),
+        timeout: 1200,
+      },
+      {
+        locator: page.locator(
+          'textarea[placeholder*="https" i]:visible, textarea[placeholder*="url" i]:visible, textarea[placeholder*="ссыл" i]:visible',
+        ),
+        timeout: 1200,
+      },
+      {
+        locator: page.locator(
+          '[role="dialog"] input:visible, [aria-modal="true"] input:visible, [role="tooltip"] input:visible, [data-floating-ui-root] input:visible',
+        ),
+        timeout: 1200,
+      },
+    ];
+
     const linkField = await findFirstVisible(
-      [
-        { locator: page.locator('input[type="url"]:visible'), timeout: 2500 },
-        { locator: page.locator('input[placeholder*="https" i]:visible, input[placeholder*="url" i]:visible, input[placeholder*="ссыл" i]:visible'), timeout: 2500 },
-        { locator: page.locator('input[aria-label*="ссыл" i]:visible, input[aria-label*="url" i]:visible, input[aria-label*="link" i]:visible'), timeout: 2500 },
-        { locator: page.locator('textarea[placeholder*="https" i]:visible, textarea[placeholder*="url" i]:visible, textarea[placeholder*="ссыл" i]:visible'), timeout: 2500 },
-      ],
+      candidates,
       platform === "dzen" ? "DZEN_LINK_FIELD_NOT_FOUND" : "VC_LINK_FIELD_NOT_FOUND",
       `Не удалось открыть поле ссылки для ${text}.`,
       "add editor link",
@@ -1225,10 +1341,37 @@ function createAutomationRunner({ app, sendState, logJob }) {
     const linkFieldLooksSafe = await linkField
       .evaluate((field) => {
         const tag = field.tagName.toLowerCase();
-        return tag === "input" || tag === "textarea";
+        const insideEditor = Boolean(field.closest("[data-flowpost-cta-editor='true']"));
+        const rect = field.getBoundingClientRect();
+        const label = [
+          field.getAttribute("aria-label"),
+          field.getAttribute("placeholder"),
+          field.getAttribute("type"),
+          field.getAttribute("name"),
+          field.getAttribute("id"),
+        ]
+          .filter(Boolean)
+          .join(" ");
+        return {
+          safe:
+            (tag === "input" || tag === "textarea") &&
+            !insideEditor &&
+            rect.width > 0 &&
+            rect.height > 0,
+          tag,
+          insideEditor,
+          label,
+        };
       })
-      .catch(() => false);
-    if (!linkFieldLooksSafe) {
+      .catch((error) => ({
+        safe: false,
+        reason: error instanceof Error ? error.message : String(error),
+      }));
+    if (!linkFieldLooksSafe.safe) {
+      logCtaLink(platform, "link input found", {
+        found: false,
+        details: linkFieldLooksSafe,
+      });
       throw automationError(
         platform === "dzen" ? "DZEN_LINK_FIELD_NOT_FOUND" : "VC_LINK_FIELD_NOT_FOUND",
         `Не удалось открыть безопасное поле ссылки для ${text}. Публикация остановлена.`,
@@ -1237,10 +1380,15 @@ function createAutomationRunner({ app, sendState, logJob }) {
       );
     }
 
+    logCtaLink(platform, "link input found", {
+      found: true,
+      details: linkFieldLooksSafe,
+    });
+
     return linkField;
   }
 
-  async function fillSafeLinkInput(page, linkField, url) {
+  async function fillSafeLinkInput(page, linkField, url, platform) {
     await linkField.fill(url).catch(async () => {
       const field = await waitVisibleEnabled(linkField);
       await field.click({ timeout: 5000 });
@@ -1248,6 +1396,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
       await page.keyboard.press(`${modifier}+A`).catch(() => undefined);
       await page.keyboard.insertText(url);
     });
+    logCtaLink(platform, "url inserted", { ctaUrl: url });
   }
 
   async function editorHasCtaLink(editorLocator, text, url) {
@@ -1258,23 +1407,36 @@ function createAutomationRunner({ app, sendState, logJob }) {
         const anchors = Array.from(root.querySelectorAll("a"));
         return anchors.some((anchor) => {
           const label = (anchor.textContent || "").trim().toLowerCase();
-          const href = String(anchor.getAttribute("href") || anchor.href || "").toLowerCase();
+          const href = String(anchor.getAttribute("href") || anchor.href || "")
+            .trim()
+            .replace(/\/+$/, "")
+            .toLowerCase();
           return label.includes(expectedText) && href.includes(expectedUrl);
         });
       },
-      { text, url },
+      { text, url: normalizeUrlForCompare(url) },
     ).catch(() => false);
   }
 
   async function addLinkToEditorText(page, editorLocator, payload, platform) {
     const text = normalizeCtaText(payload);
     const url = String(payload.ctaUrl || "").trim();
+    const editorText = await editorLocator.innerText({ timeout: 5000 }).catch(() => "");
+
+    logCtaLink(platform, "platform", { platform });
+    logCtaLink(platform, "ctaText", { ctaText: text });
+    logCtaLink(platform, "ctaUrl", { ctaUrl: url || null });
+    logCtaLink(platform, "body contains ctaText", {
+      contains: editorText.toLowerCase().includes(text.toLowerCase()),
+    });
 
     if (!url) {
       return false;
     }
 
-    const selected = await selectTextInEditable(page, editorLocator, text).catch(() => false);
+    await markCtaEditor(editorLocator);
+
+    const selected = await selectTextInEditable(page, editorLocator, text, platform).catch(() => false);
     if (!selected) {
       throw automationError(
         platform === "dzen" ? "DZEN_CTA_TEXT_NOT_FOUND" : "VC_CTA_TEXT_NOT_FOUND",
@@ -1284,18 +1446,24 @@ function createAutomationRunner({ app, sendState, logJob }) {
       );
     }
 
-    await openEditorLinkTool(page, platform);
+    const tool = await openEditorLinkTool(page, platform);
+    logCtaLink(platform, "toolbar open method", { method: tool });
     const linkField = await findSafeLinkInput(page, platform, text);
-    await fillSafeLinkInput(page, linkField, url);
+    await fillSafeLinkInput(page, linkField, url, platform);
     await page.keyboard.press("Enter");
     await humanDelay(700, 1300);
 
     const linked = await editorHasCtaLink(editorLocator, text, url);
+    logCtaLink(platform, "link verification result", {
+      linked,
+      ctaText: text,
+      ctaUrl: url,
+    });
 
     if (!linked) {
       throw automationError(
         platform === "dzen" ? "DZEN_LINK_NOT_APPLIED" : "VC_LINK_NOT_APPLIED",
-        `Не удалось добавить кликабельную ссылку ${text} в редактор ${platform === "dzen" ? "Dzen" : "VC.ru"}.`,
+        `Не удалось добавить кликабельную CTA-ссылку ${text} в редактор ${platform === "dzen" ? "Dzen" : "VC.ru"}. Публикация остановлена.`,
         `Clickable link was not found in ${platform} editor after link insertion.`,
         "add editor link",
       );
@@ -1317,16 +1485,25 @@ function createAutomationRunner({ app, sendState, logJob }) {
     const linked = await editorLocator.evaluate(
       (root, args) => Array.from(root.querySelectorAll("a")).some((anchor) => {
         const label = (anchor.textContent || "").trim().toLowerCase();
-        const href = String(anchor.getAttribute("href") || anchor.href || "");
-        return label.includes(args.text.toLowerCase()) && href.includes(args.url);
+        const href = String(anchor.getAttribute("href") || anchor.href || "")
+          .trim()
+          .replace(/\/+$/, "");
+        return label.includes(args.text.toLowerCase()) && href.toLowerCase().includes(args.url);
       }),
-      { text: ctaText, url },
+      { text: ctaText, url: normalizeUrlForCompare(url) },
     ).catch(() => false);
+
+    logCtaLink(platform, "link verification result", {
+      linked,
+      ctaText,
+      ctaUrl: url,
+      phase: "before_publish",
+    });
 
     if (!linked) {
       throw automationError(
         platform === "dzen" ? "DZEN_LINK_NOT_APPLIED" : "VC_LINK_NOT_APPLIED",
-        `Не удалось добавить кликабельную ссылку ${ctaText} в редактор ${platform === "dzen" ? "Dzen" : "VC.ru"}.`,
+        `Не удалось добавить кликабельную CTA-ссылку ${ctaText} в редактор ${platform === "dzen" ? "Dzen" : "VC.ru"}. Публикация остановлена.`,
         `Missing clickable ${ctaText} link before ${platform} publish.`,
         "validate article links",
       );

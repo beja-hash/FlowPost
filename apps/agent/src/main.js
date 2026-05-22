@@ -19,6 +19,7 @@ const settingsPath = path.join(app.getPath("userData"), "settings.json");
 let mainWindow;
 let settings = {};
 let pollingTimer;
+let scheduledTimer;
 let heartbeatTimer;
 let prewarmPromise = null;
 let isPolling = false;
@@ -328,6 +329,7 @@ function startHeartbeat() {
 
 function stopAgentLoops() {
   clearInterval(pollingTimer);
+  clearInterval(scheduledTimer);
   clearInterval(heartbeatTimer);
   clearTimeout(quitAfterWakeTimer);
 }
@@ -506,11 +508,53 @@ async function pollJobs() {
   }
 }
 
+async function pollScheduledPublications() {
+  if (!settings.agentToken) return;
+
+  const agentNow = new Date();
+  console.log("[Scheduler] agent now", agentNow.toISOString());
+
+  try {
+    const result = await api("/api/agent/scheduled-publications/claim", {
+      method: "POST",
+      body: JSON.stringify({
+        agentNow: agentNow.toISOString(),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || null,
+      }),
+    });
+
+    console.log("[Scheduler] claim result", {
+      agentNow: agentNow.toISOString(),
+      queuedCount: result.queuedCount ?? 0,
+      checkedAt: result.checkedAt ?? null,
+    });
+
+    if ((result.queuedCount ?? 0) > 0) {
+      void pollJobs();
+    }
+  } catch (error) {
+    if (isRevokedTokenError(error)) {
+      await clearLocalAgentToken(
+        "Agent отключен от аккаунта. Создайте новый код подключения в FlowPost.",
+      );
+      return;
+    }
+
+    console.log("[Scheduler] claim failed", {
+      agentNow: agentNow.toISOString(),
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 function startPolling() {
   clearInterval(pollingTimer);
+  clearInterval(scheduledTimer);
   pollingTimer = setInterval(() => void pollJobs(), 3000);
+  scheduledTimer = setInterval(() => void pollScheduledPublications(), 30_000);
   startHeartbeat();
   void prewarmBrowser();
+  void pollScheduledPublications();
   void pollJobs();
   console.log("[agent] polling started");
   logLifecycle("polling:started");

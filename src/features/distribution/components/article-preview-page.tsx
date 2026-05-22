@@ -13,6 +13,7 @@ type ArticlePreviewPageProps = {
 const statusLabels = {
   PLANNED: "черновик",
   SCHEDULED: "запланировано",
+  PUBLISHING: "публикуется",
   PUBLISHED: "опубликовано",
   FAILED: "ошибка",
   CANCELED: "отменено",
@@ -25,6 +26,10 @@ function publicationTone(status: DistributionAssetListItem["publicationStatus"])
 
   if (status === "FAILED") {
     return "danger";
+  }
+
+  if (status === "PUBLISHING") {
+    return "warning";
   }
 
   if (status === "SCHEDULED") {
@@ -160,6 +165,39 @@ function renderArticleContent(asset: DistributionAssetListItem) {
   return nodes;
 }
 
+function formatTime(value?: string | null) {
+  if (!value) {
+    return "";
+  }
+
+  return new Intl.DateTimeFormat("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function isOverdueScheduled(asset: DistributionAssetListItem) {
+  return (
+    asset.publicationStatus === "SCHEDULED" &&
+    Boolean(asset.scheduledAt) &&
+    new Date(asset.scheduledAt!).getTime() <= Date.now()
+  );
+}
+
+function publicationStatusLabel(asset: DistributionAssetListItem) {
+  if (asset.publicationStatus === "SCHEDULED" && asset.scheduledAt) {
+    return isOverdueScheduled(asset)
+      ? "ожидает публикации"
+      : `запланировано на ${formatTime(asset.scheduledAt)}`;
+  }
+
+  if (asset.publicationStatus === "FAILED") {
+    return "ошибка публикации";
+  }
+
+  return statusLabels[asset.publicationStatus];
+}
+
 export function ArticlePreviewPage({ asset }: ArticlePreviewPageProps) {
   return (
     <div className="space-y-8">
@@ -180,12 +218,18 @@ export function ArticlePreviewPage({ asset }: ArticlePreviewPageProps) {
               </h1>
               <div className="mt-1 flex items-center gap-2">
                 <StatusBadge tone={publicationTone(asset.publicationStatus)}>
-                  {statusLabels[asset.publicationStatus]}
+                  {publicationStatusLabel(asset)}
                 </StatusBadge>
                 <span className="text-sm text-muted-foreground">
                   {asset.brandName} · {asset.platformName}
                 </span>
               </div>
+              {isOverdueScheduled(asset) ? (
+                <p className="text-destructive mt-2 text-sm">
+                  Время публикации прошло, но задача ещё не была обработана.
+                  Проверьте agent/scheduler.
+                </p>
+              ) : null}
             </div>
           </div>
           <Button

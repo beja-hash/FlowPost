@@ -11,6 +11,8 @@ export const dynamic = "force-dynamic";
 const scheduleSchema = z.object({
   articleId: z.string().cuid(),
   publishAt: z.string().datetime(),
+  selectedLocalTime: z.string().optional(),
+  browserTimezone: z.string().optional().nullable(),
 });
 
 function toErrorResponse(error: unknown) {
@@ -62,6 +64,10 @@ export async function POST(request: NextRequest) {
       session.user.id,
       payload.articleId,
       payload.publishAt,
+      {
+        selectedLocalTime: payload.selectedLocalTime,
+        browserTimezone: payload.browserTimezone,
+      },
     );
 
     return NextResponse.json(result);

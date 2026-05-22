@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   CalendarClock,
@@ -22,6 +22,10 @@ import {
   ensureAgentAwakeForAction,
 } from "@/features/agent/client/agent-wake";
 import type { BrandOption } from "@/features/brands/types";
+import {
+  formatScheduleDateTime,
+  SchedulePublicationDialog,
+} from "@/features/distribution/components/schedule-publication-dialog";
 import type {
   DistributionAssetListItem,
   PlatformOption,
@@ -33,6 +37,8 @@ type DistributionManagerProps = {
   platformOptions: PlatformOption[];
 };
 
+type AgentState = "active" | "busy" | "paired_offline" | "not_paired" | null;
+
 const statusLabels = {
   DRAFT: "черновик",
   READY: "готово",
@@ -41,6 +47,7 @@ const statusLabels = {
   ARCHIVED: "архив",
   PLANNED: "черновик",
   SCHEDULED: "запланировано",
+  PUBLISHING: "публикуется",
   FAILED: "ошибка",
   CANCELED: "отменено",
 } as const;
@@ -54,6 +61,10 @@ function publicationTone(
 
   if (status === "FAILED") {
     return "danger";
+  }
+
+  if (status === "PUBLISHING") {
+    return "warning";
   }
 
   if (status === "SCHEDULED") {
@@ -76,6 +87,39 @@ function formatDate(value?: string | null) {
   }).format(new Date(value));
 }
 
+function formatTime(value?: string | null) {
+  if (!value) {
+    return "";
+  }
+
+  return new Intl.DateTimeFormat("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function isOverdueScheduled(asset: DistributionAssetListItem) {
+  return (
+    asset.publicationStatus === "SCHEDULED" &&
+    Boolean(asset.scheduledAt) &&
+    new Date(asset.scheduledAt!).getTime() <= Date.now()
+  );
+}
+
+function publicationStatusLabel(asset: DistributionAssetListItem) {
+  if (asset.publicationStatus === "SCHEDULED" && asset.scheduledAt) {
+    return isOverdueScheduled(asset)
+      ? "ожидает публикации"
+      : `запланировано на ${formatTime(asset.scheduledAt)}`;
+  }
+
+  if (asset.publicationStatus === "FAILED") {
+    return "ошибка публикации";
+  }
+
+  return statusLabels[asset.publicationStatus];
+}
+
 export function DistributionManager({
   initialAssets,
   platformOptions,
@@ -87,11 +131,57 @@ export function DistributionManager({
   const [pendingId, setPendingId] = useState<string | null>(null);
   const pendingActionsRef = useRef(new Set<string>());
   const [generationStatus, setGenerationStatus] = useState<string | null>(null);
+  const [agentState, setAgentState] = useState<AgentState>(null);
+  const [scheduleTargetId, setScheduleTargetId] = useState<string | null>(null);
 
   const selectedAsset = useMemo(
     () => assets.find((asset) => asset.id === selectedId) ?? assets[0] ?? null,
     [assets, selectedId],
   );
+  const hasScheduledPublications = assets.some(
+    (asset) => asset.publicationStatus === "SCHEDULED",
+  );
+  const agentDisconnected =
+    hasScheduledPublications &&
+    agentState !== null &&
+    agentState !== "active" &&
+    agentState !== "busy";
+  const scheduleAgentDisconnected =
+    agentState !== null && agentState !== "active" && agentState !== "busy";
+  const scheduleTarget = scheduleTargetId
+    ? assets.find((asset) => asset.id === scheduleTargetId) ?? null
+    : null;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAgentState() {
+      try {
+        const response = await fetch("/api/agent/devices", {
+          cache: "no-store",
+        });
+        const body = (await response.json()) as {
+          agent?: { state?: AgentState };
+        };
+
+        if (!cancelled) {
+          setAgentState(body.agent?.state ?? "not_paired");
+        }
+      } catch {
+        if (!cancelled) {
+          setAgentState("not_paired");
+        }
+      }
+    }
+
+    void loadAgentState();
+    const timer = window.setInterval(loadAgentState, 30_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   async function reloadAssets(nextSelectedId?: string) {
     const response = await fetch("/api/assets");
@@ -224,6 +314,16 @@ export function DistributionManager({
         body: JSON.stringify({
           articleId: assetId,
           ...(agentWakeStartedAt ? { agentWakeStartedAt } : {}),
+          ...(endpoint === "/api/articles/schedule"
+            ? {
+                selectedLocalTime:
+                  typeof payload.publishAt === "string"
+                    ? payload.publishAt
+                    : undefined,
+                browserTimezone:
+                  Intl.DateTimeFormat().resolvedOptions().timeZone ?? null,
+              }
+            : {}),
           ...payload,
         }),
       });
@@ -328,7 +428,123 @@ export function DistributionManager({
     }
   }
 
+  async function schedulePublication(
+    assetId: string,
+    payload: {
+      publishAt: string;
+      selectedLocalTime: string;
+      browserTimezone: string | null;
+    },
+  ) {
+    if (pendingActionsRef.current.has(assetId)) {
+      return;
+    }
+
+    pendingActionsRef.current.add(assetId);
+    setPendingId(assetId);
+
+    try {
+      const response = await fetch("/api/articles/schedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          articleId: assetId,
+          publishAt: payload.publishAt,
+          selectedLocalTime: payload.selectedLocalTime,
+          browserTimezone: payload.browserTimezone,
+        }),
+      });
+      const body = (await response.json()) as {
+        error?: { message?: string };
+      };
+
+      if (!response.ok) {
+        throw new Error(
+          body.error?.message ?? "Не удалось запланировать статью.",
+        );
+      }
+
+      const nextAsset = await reloadAsset(assetId);
+      setScheduleTargetId(null);
+      toast.success(
+        `Публикация запланирована на ${formatScheduleDateTime(nextAsset.scheduledAt)}.`,
+      );
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Не удалось запланировать статью.",
+      );
+    } finally {
+      setPendingId(null);
+      pendingActionsRef.current.delete(assetId);
+    }
+  }
+
+  async function cancelSchedule(assetId: string) {
+    if (pendingActionsRef.current.has(assetId)) {
+      return;
+    }
+
+    pendingActionsRef.current.add(assetId);
+    setPendingId(assetId);
+
+    try {
+      const response = await fetch(`/api/assets/${assetId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scheduledAt: null,
+          publicationStatus: "PLANNED",
+        }),
+      });
+      const body = (await response.json()) as
+        | { asset: DistributionAssetListItem }
+        | { error?: { message?: string } };
+
+      if (!response.ok || !("asset" in body)) {
+        throw new Error(
+          "error" in body
+            ? body.error?.message ?? "Не удалось отменить планирование."
+            : "Не удалось отменить планирование.",
+        );
+      }
+
+      setAssets((current) =>
+        current.map((asset) => (asset.id === assetId ? body.asset : asset)),
+      );
+      setSelectedId(assetId);
+      toast.success("Планирование отменено.");
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Не удалось отменить планирование.",
+      );
+    } finally {
+      setPendingId(null);
+      pendingActionsRef.current.delete(assetId);
+    }
+  }
+
   return (
+    <>
+    {scheduleTarget ? (
+      <SchedulePublicationDialog
+        open
+        onOpenChange={(open) => {
+          if (!open) {
+            setScheduleTargetId(null);
+          }
+        }}
+        initialValue={scheduleTarget.scheduledAt}
+        platformName={scheduleTarget.platformName}
+        agentDisconnected={scheduleAgentDisconnected}
+        isPending={pendingId === scheduleTarget.id}
+        onConfirm={(payload) => schedulePublication(scheduleTarget.id, payload)}
+      />
+    ) : null}
+
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
@@ -351,6 +567,12 @@ export function DistributionManager({
           Новая статья
         </Button>
       </div>
+
+      {agentDisconnected ? (
+        <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+          Agent не подключён. Запланированные публикации не будут выполнены.
+        </div>
+      ) : null}
 
       <div className="grid min-h-[680px] gap-5 xl:grid-cols-[340px_minmax(0,1fr)]">
         <Card className="rounded-[1.5rem] border-border/40 bg-card/78 py-0 ring-1 ring-white/10">
@@ -392,14 +614,18 @@ export function DistributionManager({
                           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                             <span>{asset.platformName}</span>
                             <span className="size-1 rounded-full bg-border" />
-                            <span>{formatDate(asset.updatedAt)}</span>
+                            <span>
+                              {asset.scheduledAt
+                                ? formatScheduleDateTime(asset.scheduledAt)
+                                : formatDate(asset.updatedAt)}
+                            </span>
                           </div>
                         </div>
                         <StatusBadge
                           tone={publicationTone(asset.publicationStatus)}
                           className="shrink-0"
                         >
-                          {statusLabels[asset.publicationStatus]}
+                          {publicationStatusLabel(asset)}
                         </StatusBadge>
                       </div>
                     </button>
@@ -428,7 +654,7 @@ export function DistributionManager({
                               selectedAsset.publicationStatus,
                             )}
                           >
-                            {statusLabels[selectedAsset.publicationStatus]}
+                            {publicationStatusLabel(selectedAsset)}
                           </StatusBadge>
                           <span className="text-xs text-muted-foreground">
                             {selectedAsset.platformName}
@@ -444,6 +670,12 @@ export function DistributionManager({
                         selectedAsset.publicationLastError ? (
                           <p className="text-destructive mt-3 max-w-3xl text-sm">
                             {selectedAsset.publicationLastError}
+                          </p>
+                        ) : null}
+                        {isOverdueScheduled(selectedAsset) ? (
+                          <p className="text-destructive mt-3 max-w-3xl text-sm">
+                            Время публикации прошло, но задача ещё не была
+                            обработана. Проверьте agent/scheduler.
                           </p>
                         ) : null}
                       </div>
@@ -532,28 +764,27 @@ export function DistributionManager({
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() =>
-                        void runArticleAction(
-                          selectedAsset.id,
-                          "/api/articles/schedule",
-                          "Статья запланирована.",
-                          {
-                            publishAt:
-                              selectedAsset.scheduledAt ??
-                              new Date(
-                                Date.now() + 24 * 60 * 60 * 1000,
-                              ).toISOString(),
-                          },
-                        )
-                      }
+                      onClick={() => setScheduleTargetId(selectedAsset.id)}
                       disabled={
                         pendingId === selectedAsset.id ||
                         selectedAsset.publicationStatus === "PUBLISHED"
                       }
                     >
                       <CalendarClock />
-                      Запланировать
+                      {selectedAsset.publicationStatus === "SCHEDULED"
+                        ? "Изменить время"
+                        : "Запланировать"}
                     </Button>
+                    {selectedAsset.publicationStatus === "SCHEDULED" ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => void cancelSchedule(selectedAsset.id)}
+                        disabled={pendingId === selectedAsset.id}
+                      >
+                        Отменить планирование
+                      </Button>
+                    ) : null}
                   </section>
 
                   <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -571,9 +802,19 @@ export function DistributionManager({
                             selectedAsset.publicationStatus,
                           )}
                         >
-                          {statusLabels[selectedAsset.publicationStatus]}
+                          {publicationStatusLabel(selectedAsset)}
                         </StatusBadge>
                       </div>
+                    </div>
+                    <div className="rounded-[1.2rem] bg-background/24 p-4">
+                      <p className="text-xs text-muted-foreground">
+                        Запланировано
+                      </p>
+                      <p className="mt-2 text-sm font-semibold">
+                        {selectedAsset.scheduledAt
+                          ? formatScheduleDateTime(selectedAsset.scheduledAt)
+                          : "Не запланировано"}
+                      </p>
                     </div>
                     <div className="rounded-[1.2rem] bg-background/24 p-4">
                       <p className="text-xs text-muted-foreground">Интент</p>
@@ -660,5 +901,6 @@ export function DistributionManager({
         </Card>
       </div>
     </div>
+    </>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { PublicationStatus, TopicIntent } from "@prisma/client";
@@ -24,6 +24,10 @@ import {
   ensureAgentAwakeForAction,
 } from "@/features/agent/client/agent-wake";
 import type { BrandOption } from "@/features/brands/types";
+import {
+  formatScheduleDateTime,
+  SchedulePublicationDialog,
+} from "@/features/distribution/components/schedule-publication-dialog";
 import type {
   ArticleTone,
   ContentFormat,
@@ -39,6 +43,8 @@ type ArticleEditorPageProps = {
   platforms: PlatformOption[];
   asset?: DistributionAssetListItem;
 };
+
+type AgentState = "active" | "busy" | "paired_offline" | "not_paired" | null;
 
 type FormState = {
   title: string;
@@ -103,6 +109,7 @@ const generationMessages = [
 const publicationLabels: Record<PublicationStatus, string> = {
   PLANNED: "Черновик",
   SCHEDULED: "Запланировано",
+  PUBLISHING: "Публикуется",
   PUBLISHED: "Опубликовано",
   FAILED: "Ошибка",
   CANCELED: "Отменено",
@@ -198,6 +205,10 @@ function statusTone(status: PublicationStatus) {
 
   if (status === PublicationStatus.FAILED) {
     return "danger";
+  }
+
+  if (status === PublicationStatus.PUBLISHING) {
+    return "warning";
   }
 
   if (status === PublicationStatus.SCHEDULED) {
@@ -310,6 +321,39 @@ function getGenerationErrorMessage(body: ArticleGenerationResponseBody) {
   return "Не удалось сгенерировать статью.";
 }
 
+function formatTime(value?: string | null) {
+  if (!value) {
+    return "";
+  }
+
+  return new Intl.DateTimeFormat("ru-RU", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function isOverdueScheduled(asset?: DistributionAssetListItem) {
+  return (
+    asset?.publicationStatus === PublicationStatus.SCHEDULED &&
+    Boolean(asset.scheduledAt) &&
+    new Date(asset.scheduledAt!).getTime() <= Date.now()
+  );
+}
+
+function publicationStatusLabel(asset: DistributionAssetListItem | undefined, fallback: PublicationStatus) {
+  if (asset?.publicationStatus === PublicationStatus.SCHEDULED && asset.scheduledAt) {
+    return isOverdueScheduled(asset)
+      ? "Ожидает публикации"
+      : `Запланировано на ${formatTime(asset.scheduledAt)}`;
+  }
+
+  if (asset?.publicationStatus === PublicationStatus.FAILED) {
+    return "Ошибка публикации";
+  }
+
+  return publicationLabels[asset?.publicationStatus ?? fallback];
+}
+
 export function ArticleEditorPage({
   mode,
   brands,
@@ -325,6 +369,8 @@ export function ArticleEditorPage({
   );
   const [generationStatus, setGenerationStatus] = useState<string | null>(null);
   const [briefLoading, setBriefLoading] = useState<BriefLoadingTarget>(null);
+  const [agentState, setAgentState] = useState<AgentState>(null);
+  const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
 
   const pageTitle =
     mode === "create" ? "Новая статья" : "Редактирование статьи";
@@ -333,10 +379,17 @@ export function ArticleEditorPage({
   const selectedPlatformSlug =
     selectedPlatform?.slug?.toLowerCase().includes("vc") ? "vc" : "dzen";
   const isBriefLoading = Boolean(briefLoading);
+  const agentDisconnected =
+    form.publicationStatus === PublicationStatus.SCHEDULED &&
+    agentState !== null &&
+    agentState !== "active" &&
+    agentState !== "busy";
+  const scheduleAgentDisconnected =
+    agentState !== null && agentState !== "active" && agentState !== "busy";
 
   const selectedStatusLabel = useMemo(
-    () => publicationLabels[form.publicationStatus],
-    [form.publicationStatus],
+    () => publicationStatusLabel(currentAsset, form.publicationStatus),
+    [currentAsset, form.publicationStatus],
   );
 
   function updateField<K extends keyof FormState>(key: K, value: FormState[K]) {
@@ -347,6 +400,37 @@ export function ArticleEditorPage({
     setCurrentAsset(nextAsset);
     setForm(getInitialState(brands, platforms, nextAsset));
   }
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAgentState() {
+      try {
+        const response = await fetch("/api/agent/devices", {
+          cache: "no-store",
+        });
+        const body = (await response.json()) as {
+          agent?: { state?: AgentState };
+        };
+
+        if (!cancelled) {
+          setAgentState(body.agent?.state ?? "not_paired");
+        }
+      } catch {
+        if (!cancelled) {
+          setAgentState("not_paired");
+        }
+      }
+    }
+
+    void loadAgentState();
+    const timer = window.setInterval(loadAgentState, 30_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   function hasGeneratedContent(nextAsset: DistributionAssetListItem) {
     const content = nextAsset.canonicalBody.trim();
@@ -659,7 +743,11 @@ export function ArticleEditorPage({
     });
   }
 
-  function handleSchedule() {
+  function handleSchedule(payload: {
+    publishAt: string;
+    selectedLocalTime: string;
+    browserTimezone: string | null;
+  }) {
     if (!currentAsset) {
       return;
     }
@@ -667,14 +755,15 @@ export function ArticleEditorPage({
     startTransition(async () => {
       try {
         const savedAsset = await saveArticle();
-        const publishAt =
-          fromDatetimeLocalValue(form.scheduledAt) ??
-          new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-
         const response = await fetch("/api/articles/schedule", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ articleId: savedAsset.id, publishAt }),
+          body: JSON.stringify({
+            articleId: savedAsset.id,
+            publishAt: payload.publishAt,
+            selectedLocalTime: payload.selectedLocalTime,
+            browserTimezone: payload.browserTimezone,
+          }),
         });
         const body = (await response.json()) as {
           status?: "requires_agent" | "queued" | "busy";
@@ -689,13 +778,46 @@ export function ArticleEditorPage({
           );
         }
 
-        syncFromAsset(await reloadAsset(savedAsset.id));
-        toast.success("Статья запланирована.");
+        const nextAsset = await reloadAsset(savedAsset.id);
+        syncFromAsset(nextAsset);
+        setScheduleDialogOpen(false);
+        toast.success(
+          `Публикация запланирована на ${formatScheduleDateTime(nextAsset.scheduledAt)}.`,
+        );
       } catch (error) {
         toast.error(
           error instanceof Error
             ? error.message
             : "Не удалось запланировать статью.",
+        );
+      }
+    });
+  }
+
+  function handleCancelSchedule() {
+    if (!currentAsset) {
+      return;
+    }
+
+    startTransition(async () => {
+      try {
+        const response = await fetch(`/api/assets/${currentAsset.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            scheduledAt: null,
+            publicationStatus: PublicationStatus.PLANNED,
+          }),
+        });
+        const nextAsset = await parseAssetResponse(response);
+
+        syncFromAsset(nextAsset);
+        toast.success("Планирование отменено.");
+      } catch (error) {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Не удалось отменить планирование.",
         );
       }
     });
@@ -802,6 +924,19 @@ export function ArticleEditorPage({
   }
 
   return (
+    <>
+    {scheduleDialogOpen ? (
+      <SchedulePublicationDialog
+        open
+        onOpenChange={setScheduleDialogOpen}
+        initialValue={currentAsset?.scheduledAt ?? form.scheduledAt}
+        platformName={selectedPlatform?.name}
+        agentDisconnected={scheduleAgentDisconnected}
+        isPending={isPending}
+        onConfirm={handleSchedule}
+      />
+    ) : null}
+
     <div className="space-y-5">
       <div className="border-border/70 bg-background/88 sticky top-16 z-20 -mx-4 border-b px-4 py-3 backdrop-blur-xl sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -828,6 +963,12 @@ export function ArticleEditorPage({
               currentAsset?.publicationLastError ? (
                 <p className="text-destructive mt-2 text-sm">
                   {currentAsset.publicationLastError}
+                </p>
+              ) : null}
+              {isOverdueScheduled(currentAsset) ? (
+                <p className="text-destructive mt-2 text-sm">
+                  Время публикации прошло, но задача ещё не была обработана.
+                  Проверьте agent/scheduler.
                 </p>
               ) : null}
             </div>
@@ -868,19 +1009,32 @@ export function ArticleEditorPage({
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={handleSchedule}
+                  onClick={() => setScheduleDialogOpen(true)}
                   disabled={isPending || !canRunAssetActions}
                 >
                   <CalendarClock />
-                  Запланировать
+                  {form.publicationStatus === PublicationStatus.SCHEDULED
+                    ? "Изменить время"
+                    : "Запланировать"}
                 </Button>
+                {form.publicationStatus === PublicationStatus.SCHEDULED ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleCancelSchedule}
+                    disabled={isPending || !canRunAssetActions}
+                  >
+                    Отменить планирование
+                  </Button>
+                ) : null}
                 <Button
                   size="sm"
                   onClick={handlePublish}
                   disabled={
                     isPending ||
                     !canRunAssetActions ||
-                    form.publicationStatus === PublicationStatus.PUBLISHED
+                    form.publicationStatus === PublicationStatus.PUBLISHED ||
+                    form.publicationStatus === PublicationStatus.PUBLISHING
                   }
                 >
                   <Send />
@@ -901,6 +1055,12 @@ export function ArticleEditorPage({
           </div>
         </div>
       </div>
+
+      {agentDisconnected ? (
+        <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+          Agent не подключён. Запланированные публикации не будут выполнены.
+        </div>
+      ) : null}
 
       <div className="grid gap-5 xl:grid-cols-[390px_minmax(0,1fr)]">
         <Card className="border-border/70 rounded-xl shadow-none">
@@ -1189,25 +1349,42 @@ export function ArticleEditorPage({
               <div>
                 <h2 className="text-sm font-medium">Публикация</h2>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Эти поля не влияют на идею статьи и используются для планирования.
+                  Время указано по вашему локальному часовому поясу.
                 </p>
               </div>
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-              <div className="grid gap-2">
-                <label
-                  className="text-sm font-medium"
-                  htmlFor="article-publish-at"
-                >
-                  Дата публикации
-                </label>
-                <Input
-                  id="article-publish-at"
-                  type="datetime-local"
-                  value={form.scheduledAt}
-                  onChange={(event) =>
-                    updateField("scheduledAt", event.target.value)
-                  }
-                />
+
+              <div className="rounded-xl border border-border/60 bg-background/28 p-4">
+                <p className="text-xs text-muted-foreground">
+                  Запланированное время
+                </p>
+                <p className="mt-1 text-sm font-semibold">
+                  {currentAsset?.scheduledAt
+                    ? formatScheduleDateTime(currentAsset.scheduledAt)
+                    : "Не запланировано"}
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setScheduleDialogOpen(true)}
+                    disabled={!canRunAssetActions || isPending}
+                  >
+                    <CalendarClock />
+                    {currentAsset?.scheduledAt ? "Изменить время" : "Запланировать"}
+                  </Button>
+                  {currentAsset?.publicationStatus === PublicationStatus.SCHEDULED ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={handleCancelSchedule}
+                      disabled={isPending}
+                    >
+                      Отменить планирование
+                    </Button>
+                  ) : null}
+                </div>
               </div>
 
               <div className="grid gap-2">
@@ -1228,6 +1405,7 @@ export function ArticleEditorPage({
                   {[
                     PublicationStatus.PLANNED,
                     PublicationStatus.SCHEDULED,
+                    PublicationStatus.PUBLISHING,
                     PublicationStatus.PUBLISHED,
                     PublicationStatus.FAILED,
                   ].map((status) => (
@@ -1236,7 +1414,6 @@ export function ArticleEditorPage({
                     </option>
                   ))}
                 </select>
-              </div>
               </div>
             </div>
           </CardContent>
@@ -1268,5 +1445,6 @@ export function ArticleEditorPage({
         </Card>
       </div>
     </div>
+    </>
   );
 }
