@@ -364,6 +364,7 @@ export function AssetEditorDialog({
             >
               <option value={PublicationStatus.PLANNED}>Черновик</option>
               <option value={PublicationStatus.SCHEDULED}>Запланировано</option>
+              <option value={PublicationStatus.WAITING_AGENT}>Ожидает agent</option>
               <option value={PublicationStatus.PUBLISHING}>Публикуется</option>
               <option value={PublicationStatus.PUBLISHED}>Опубликовано</option>
               <option value={PublicationStatus.FAILED}>Ошибка</option>

@@ -87,7 +87,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
     const jobType = normalizeJobType(job.type);
     const envValue = process.env.AGENT_SHOW_BROWSER_ON_PUBLISH;
     const showBrowserOnPublish =
-      envValue === undefined ? true : String(envValue).toLowerCase() === "true";
+      envValue === undefined ? false : String(envValue).toLowerCase() === "true";
 
     if (jobType === "publish_article" || jobType === "scheduled_publish") {
       return !showBrowserOnPublish;
@@ -325,7 +325,9 @@ function createAutomationRunner({ app, sendState, logJob }) {
     launchPromise = chromium
       .launchPersistentContext(userDataDir, {
         headless,
-        args: headless ? [] : ["--start-maximized"],
+        args: headless
+          ? ["--disable-background-timer-throttling"]
+          : ["--start-minimized", "--disable-background-timer-throttling"],
         viewport: headless ? { width: 1440, height: 1000 } : null,
       })
       .then((context) => {
@@ -535,7 +537,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
     const platform = normalizePlatform(job.platform || job.payload?.platform);
     const title = payload.title;
     const body = sanitizePublishBody(payload.content, payload);
-    assertNoUnsafeLinkText(body, platform);
+    assertNoUnsafeLinkText(body, platform, payload);
 
     const headless = shouldRunHeadless(job);
     const visibleDebugMode = isDebugVisiblePublish(job, headless);
@@ -936,15 +938,69 @@ function createAutomationRunner({ app, sendState, logJob }) {
     return "FlowPostAI";
   }
 
-  function productBlock(ctaText) {
-    return `Если вы хотите системно публиковать контент на внешних площадках, можно посмотреть ${ctaText}. Сервис помогает планировать статьи, генерировать тексты и готовить публикации под разные каналы.`;
+  function escapeRegExp(value) {
+    return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function normalizeTextForCompare(value) {
+    return String(value || "")
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n")
+      .replace(/[ \t]+/g, " ")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  function logPublishContent(event, extra = {}) {
+    console.log("[Publish Content]", {
+      event,
+      ...extra,
+    });
+  }
+
+  function logPublishGuard(platform, event, extra = {}) {
+    console.log("[Publish Guard]", {
+      platform,
+      event,
+      ...extra,
+    });
+  }
+
+  function containsForbiddenPublishText(text, ctaUrl = "") {
+    const source = String(text || "");
+    const normalizedUrl = normalizeUrlForCompare(ctaUrl);
+    const plainUrlFound =
+      bareUrlPattern.test(source) ||
+      Boolean(
+        normalizedUrl &&
+          normalizeUrlForCompare(source).includes(normalizedUrl),
+      );
+    bareUrlPattern.lastIndex = 0;
+
+    const markdownFound = /\[[^\]]+\]\(https?:\/\/[^)\s]+\)/i.test(source);
+    const forbiddenPhraseFound =
+      /(^|[\s.,;:!?()"'«»])(?:покупка услуг|купить|заказать)(?=$|[\s.,;:!?()"'«»])/i.test(
+        source,
+      );
+
+    return {
+      plainUrlFound,
+      markdownFound,
+      forbiddenPhraseFound,
+      found: plainUrlFound || markdownFound || forbiddenPhraseFound,
+    };
   }
 
   function sanitizePublishBody(content, payload) {
     const ctaText = normalizeCtaText(payload);
-    const lines = String(content || "")
-      .replace(markdownLinkPattern, "$1")
-      .replace(bareUrlPattern, "")
+    const ctaUrl = String(payload.ctaUrl || "").trim();
+    const original = String(content || "");
+    const removedPlainUrl = bareUrlPattern.test(original);
+    bareUrlPattern.lastIndex = 0;
+    const withoutMarkdownLinks = original.replace(markdownLinkPattern, "$1");
+    const withoutBareUrls = withoutMarkdownLinks.replace(bareUrlPattern, "");
+    const lines = withoutBareUrls
       .replace(/\r\n/g, "\n")
       .replace(/\r/g, "\n")
       .split("\n")
@@ -960,7 +1016,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
       });
 
     const ctaOnlyPattern = new RegExp(
-      `^${ctaText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+      `^${escapeRegExp(ctaText)}$`,
       "i",
     );
     while (lines.length > 0) {
@@ -973,35 +1029,68 @@ function createAutomationRunner({ app, sendState, logJob }) {
     }
 
     const text = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-    const hasCta = ctaText && text.toLowerCase().includes(ctaText.toLowerCase());
+    const ctaTextFound = ctaText && text.toLowerCase().includes(ctaText.toLowerCase());
+    const changed = normalizeTextForCompare(original) !== normalizeTextForCompare(text);
 
-    return [text, hasCta ? null : productBlock(ctaText)]
-      .filter(Boolean)
-      .join("\n\n")
-      .trim();
-  }
-
-  function assertNoUnsafeLinkText(text, platform) {
-    const unsafePatterns = [
-      markdownLinkPattern,
-      standaloneUrlPattern,
-      /(^|\n)\s*https?:\/\/\S+/i,
-      /покупка услуг|(^|\n)\s*(покупка|услуги|купить|заказать|ссылка ниже|переходите по ссылке|cta)\s*($|\n)/i,
-    ];
-    const matched = unsafePatterns.some((pattern) => {
-      pattern.lastIndex = 0;
-      return pattern.test(text);
+    logPublishContent("original body length", { length: original.length });
+    logPublishContent("sanitized body length", { length: text.length });
+    logPublishContent("body changed before publish", { changed });
+    logPublishContent("removed plain URL", { removed: removedPlainUrl });
+    logCtaLink("publish", "ctaText", { ctaText });
+    logCtaLink("publish", "ctaUrl", { ctaUrl: ctaUrl || null });
+    logCtaLink("publish", "ctaText found in body", {
+      found: Boolean(ctaTextFound),
     });
 
-    if (matched) {
+    if (ctaUrl && !ctaTextFound) {
+      throw automationError(
+        "CTA_TEXT_NOT_FOUND_IN_BODY",
+        `CTA text ${ctaText} не найден в статье. Нельзя добавить ссылку без изменения текста.`,
+        `CTA text "${ctaText}" was not found in sanitized publish body.`,
+        "sanitize publish content",
+      );
+    }
+
+    return text;
+  }
+
+  function publishGuardState(text, payload = {}) {
+    const ctaText = normalizeCtaText(payload);
+    const ctaUrl = String(payload.ctaUrl || "").trim();
+    const source = String(text || "");
+    const ctaOnlyPattern = new RegExp(
+      `(^|\\n)\\s*${escapeRegExp(ctaText)}\\s*($|\\n)`,
+      "i",
+    );
+    const forbidden = containsForbiddenPublishText(source, ctaUrl);
+    const standaloneUrlFound = /(^|\n)\s*https?:\/\/\S+\s*($|\n)/i.test(source);
+    const standaloneCtaTextFound = ctaOnlyPattern.test(source);
+
+    return {
+      ...forbidden,
+      plainUrlFound: forbidden.plainUrlFound || standaloneUrlFound,
+      standaloneCtaTextFound,
+      found:
+        forbidden.found ||
+        standaloneUrlFound ||
+        standaloneCtaTextFound,
+    };
+  }
+
+  function assertNoUnsafeLinkText(text, platform, payload = {}) {
+    const guard = publishGuardState(text, payload);
+
+    if (guard.found) {
       const code = platform === "dzen" ? "DZEN_UNSAFE_LINK_TEXT" : "VC_UNSAFE_LINK_TEXT";
       throw automationError(
         code,
         "В тексте публикации найдена голая ссылка, markdown-ссылка или мусорный CTA. Публикация остановлена.",
-        `Unsafe link text detected for ${platform}.`,
+        `Unsafe link text detected for ${platform}: ${JSON.stringify(guard)}.`,
         "validate article links",
       );
     }
+
+    return guard;
   }
 
   function normalizeUrlForCompare(value) {
@@ -1117,7 +1206,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
       reason: error instanceof Error ? error.message : String(error),
     }));
 
-    logCtaLink(platform, "selected text success", {
+    logCtaLink(platform, "selection success", {
       ctaText: text,
       success: Boolean(result.success),
       mode: result.mode ?? null,
@@ -1372,6 +1461,10 @@ function createAutomationRunner({ app, sendState, logJob }) {
         found: false,
         details: linkFieldLooksSafe,
       });
+      logCtaLink(platform, "input found", {
+        found: false,
+        details: linkFieldLooksSafe,
+      });
       throw automationError(
         platform === "dzen" ? "DZEN_LINK_FIELD_NOT_FOUND" : "VC_LINK_FIELD_NOT_FOUND",
         `Не удалось открыть безопасное поле ссылки для ${text}. Публикация остановлена.`,
@@ -1381,6 +1474,10 @@ function createAutomationRunner({ app, sendState, logJob }) {
     }
 
     logCtaLink(platform, "link input found", {
+      found: true,
+      details: linkFieldLooksSafe,
+    });
+    logCtaLink(platform, "input found", {
       found: true,
       details: linkFieldLooksSafe,
     });
@@ -1429,6 +1526,9 @@ function createAutomationRunner({ app, sendState, logJob }) {
     logCtaLink(platform, "body contains ctaText", {
       contains: editorText.toLowerCase().includes(text.toLowerCase()),
     });
+    logCtaLink(platform, "ctaText found in body", {
+      found: editorText.toLowerCase().includes(text.toLowerCase()),
+    });
 
     if (!url) {
       return false;
@@ -1454,8 +1554,8 @@ function createAutomationRunner({ app, sendState, logJob }) {
     await humanDelay(700, 1300);
 
     const linked = await editorHasCtaLink(editorLocator, text, url);
-    logCtaLink(platform, "link verification result", {
-      linked,
+    logCtaLink(platform, "link verification", {
+      verified: linked,
       ctaText: text,
       ctaUrl: url,
     });
@@ -1474,11 +1574,31 @@ function createAutomationRunner({ app, sendState, logJob }) {
 
   async function validateEditorBeforePublish(page, editorLocator, payload, platform) {
     const text = await editorLocator.innerText({ timeout: 5000 }).catch(() => "");
-    assertNoUnsafeLinkText(text, platform);
+    let guard = null;
+    try {
+      guard = assertNoUnsafeLinkText(text, platform, payload);
+    } catch (error) {
+      const failedGuard = publishGuardState(text, payload);
+      logPublishGuard(platform, "plain URL found", {
+        found: Boolean(failedGuard.plainUrlFound),
+      });
+      logPublishGuard(platform, "final publish allowed", {
+        allowed: false,
+        guard: failedGuard,
+      });
+      throw error;
+    }
 
     const url = String(payload.ctaUrl || "").trim();
     const ctaText = normalizeCtaText(payload);
     if (!url) {
+      logPublishGuard(platform, "plain URL found", {
+        found: Boolean(guard?.plainUrlFound),
+      });
+      logPublishGuard(platform, "final publish allowed", {
+        allowed: true,
+        reason: "cta_url_missing",
+      });
       return;
     }
 
@@ -1493,18 +1613,31 @@ function createAutomationRunner({ app, sendState, logJob }) {
       { text: ctaText, url: normalizeUrlForCompare(url) },
     ).catch(() => false);
 
-    logCtaLink(platform, "link verification result", {
-      linked,
+    const expectedBody = normalizeTextForCompare(payload.body || payload.content || "");
+    const editorBody = normalizeTextForCompare(text);
+    const textMatchesBody = editorBody === expectedBody;
+
+    logCtaLink(platform, "link verification", {
+      verified: linked,
       ctaText,
       ctaUrl: url,
       phase: "before_publish",
     });
+    logPublishGuard(platform, "plain URL found", {
+      found: Boolean(guard?.plainUrlFound),
+    });
+    logPublishGuard(platform, "final publish allowed", {
+      allowed: Boolean(linked && textMatchesBody && !guard?.found),
+      linkVerified: linked,
+      textMatchesBody,
+      guard,
+    });
 
-    if (!linked) {
+    if (!linked || !textMatchesBody || guard?.found) {
       throw automationError(
         platform === "dzen" ? "DZEN_LINK_NOT_APPLIED" : "VC_LINK_NOT_APPLIED",
-        `Не удалось добавить кликабельную CTA-ссылку ${ctaText} в редактор ${platform === "dzen" ? "Dzen" : "VC.ru"}. Публикация остановлена.`,
-        `Missing clickable ${ctaText} link before ${platform} publish.`,
+        "Публикация остановлена: CTA-ссылка не была корректно добавлена без изменения текста.",
+        `Publish guard failed before ${platform} publish: linked=${linked}, textMatchesBody=${textMatchesBody}, guard=${JSON.stringify(guard)}.`,
         "validate article links",
       );
     }

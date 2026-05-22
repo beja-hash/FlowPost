@@ -38,6 +38,15 @@ type DistributionManagerProps = {
 };
 
 type AgentState = "active" | "busy" | "paired_offline" | "not_paired" | null;
+type AgentSnapshot = {
+  state?: AgentState;
+  device?: {
+    appVersion?: string | null;
+    lastSeenAt?: string | null;
+    capabilities?: { autoLaunch?: boolean } | null;
+  } | null;
+  lastSeenAt?: string | null;
+};
 
 const statusLabels = {
   DRAFT: "черновик",
@@ -47,6 +56,7 @@ const statusLabels = {
   ARCHIVED: "архив",
   PLANNED: "черновик",
   SCHEDULED: "запланировано",
+  WAITING_AGENT: "ожидает agent",
   PUBLISHING: "публикуется",
   FAILED: "ошибка",
   CANCELED: "отменено",
@@ -63,7 +73,7 @@ function publicationTone(
     return "danger";
   }
 
-  if (status === "PUBLISHING") {
+  if (status === "PUBLISHING" || status === "WAITING_AGENT") {
     return "warning";
   }
 
@@ -106,7 +116,17 @@ function isOverdueScheduled(asset: DistributionAssetListItem) {
   );
 }
 
+function isScheduledLikeStatus(
+  status: DistributionAssetListItem["publicationStatus"],
+) {
+  return status === "SCHEDULED" || status === "WAITING_AGENT";
+}
+
 function publicationStatusLabel(asset: DistributionAssetListItem) {
+  if (asset.publicationStatus === "WAITING_AGENT") {
+    return "agent offline";
+  }
+
   if (asset.publicationStatus === "SCHEDULED" && asset.scheduledAt) {
     return isOverdueScheduled(asset)
       ? "ожидает публикации"
@@ -132,6 +152,7 @@ export function DistributionManager({
   const pendingActionsRef = useRef(new Set<string>());
   const [generationStatus, setGenerationStatus] = useState<string | null>(null);
   const [agentState, setAgentState] = useState<AgentState>(null);
+  const [agentSnapshot, setAgentSnapshot] = useState<AgentSnapshot | null>(null);
   const [scheduleTargetId, setScheduleTargetId] = useState<string | null>(null);
 
   const selectedAsset = useMemo(
@@ -139,7 +160,7 @@ export function DistributionManager({
     [assets, selectedId],
   );
   const hasScheduledPublications = assets.some(
-    (asset) => asset.publicationStatus === "SCHEDULED",
+    (asset) => isScheduledLikeStatus(asset.publicationStatus),
   );
   const agentDisconnected =
     hasScheduledPublications &&
@@ -148,6 +169,21 @@ export function DistributionManager({
     agentState !== "busy";
   const scheduleAgentDisconnected =
     agentState !== null && agentState !== "active" && agentState !== "busy";
+  const agentLastSeenAt =
+    agentSnapshot?.device?.lastSeenAt ?? agentSnapshot?.lastSeenAt ?? null;
+  const agentVersion = agentSnapshot?.device?.appVersion ?? null;
+  const agentAutoLaunch = agentSnapshot?.device?.capabilities?.autoLaunch;
+  const agentDetails = [
+    agentLastSeenAt
+      ? `последний heartbeat: ${new Date(agentLastSeenAt).toLocaleString()}`
+      : null,
+    agentVersion ? `версия: ${agentVersion}` : null,
+    typeof agentAutoLaunch === "boolean"
+      ? `автозапуск: ${agentAutoLaunch ? "включён" : "выключен"}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const scheduleTarget = scheduleTargetId
     ? assets.find((asset) => asset.id === scheduleTargetId) ?? null
     : null;
@@ -161,15 +197,17 @@ export function DistributionManager({
           cache: "no-store",
         });
         const body = (await response.json()) as {
-          agent?: { state?: AgentState };
+          agent?: AgentSnapshot;
         };
 
         if (!cancelled) {
           setAgentState(body.agent?.state ?? "not_paired");
+          setAgentSnapshot(body.agent ?? null);
         }
       } catch {
         if (!cancelled) {
           setAgentState("not_paired");
+          setAgentSnapshot(null);
         }
       }
     }
@@ -570,7 +608,14 @@ export function DistributionManager({
 
       {agentDisconnected ? (
         <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
-          Agent не подключён. Запланированные публикации не будут выполнены.
+          Agent не запущен. Автопубликации не будут выполнены.
+          {agentDetails ? ` ${agentDetails}.` : null}
+        </div>
+      ) : hasScheduledPublications &&
+        (agentState === "active" || agentState === "busy") ? (
+        <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-800 dark:text-emerald-200">
+          Agent работает в фоне. Запланированные публикации будут выполнены
+          автоматически.{agentDetails ? ` ${agentDetails}.` : null}
         </div>
       ) : null}
 
@@ -672,7 +717,12 @@ export function DistributionManager({
                             {selectedAsset.publicationLastError}
                           </p>
                         ) : null}
-                        {isOverdueScheduled(selectedAsset) ? (
+                        {selectedAsset.publicationStatus === "WAITING_AGENT" ? (
+                          <p className="text-destructive mt-3 max-w-3xl text-sm">
+                            Время публикации прошло, но agent был offline.
+                            После запуска agent задача будет взята в работу.
+                          </p>
+                        ) : isOverdueScheduled(selectedAsset) ? (
                           <p className="text-destructive mt-3 max-w-3xl text-sm">
                             Время публикации прошло, но задача ещё не была
                             обработана. Проверьте agent/scheduler.
@@ -771,11 +821,11 @@ export function DistributionManager({
                       }
                     >
                       <CalendarClock />
-                      {selectedAsset.publicationStatus === "SCHEDULED"
+                      {isScheduledLikeStatus(selectedAsset.publicationStatus)
                         ? "Изменить время"
                         : "Запланировать"}
                     </Button>
-                    {selectedAsset.publicationStatus === "SCHEDULED" ? (
+                    {isScheduledLikeStatus(selectedAsset.publicationStatus) ? (
                       <Button
                         size="sm"
                         variant="ghost"

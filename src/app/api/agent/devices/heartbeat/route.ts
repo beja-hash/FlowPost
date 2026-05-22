@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import {
-  authenticateAgent,
   publicAgentDevice,
+  recordAgentHeartbeat,
 } from "@/features/agent/server/agent-service";
 import { toAgentErrorResponse } from "@/features/agent/server/error-response";
 
@@ -11,7 +11,14 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
   try {
-    const device = await authenticateAgent(request.headers.get("authorization"));
+    const payload = await request.json().catch(() => ({}));
+    const device = await recordAgentHeartbeat({
+      authorization: request.headers.get("authorization"),
+      appVersion:
+        typeof payload?.appVersion === "string" ? payload.appVersion : null,
+      platform: typeof payload?.platform === "string" ? payload.platform : null,
+      capabilities: payload?.capabilities,
+    });
 
     return NextResponse.json({
       ok: true,

@@ -302,7 +302,17 @@ async function sendHeartbeat() {
   try {
     await api("/api/agent/devices/heartbeat", {
       method: "POST",
-      body: JSON.stringify({ appVersion: APP_VERSION }),
+      body: JSON.stringify({
+        appVersion: APP_VERSION,
+        platform: os.platform(),
+        capabilities: {
+          scheduledPublishing: true,
+          backgroundPolling: true,
+          playwright: true,
+          tray: true,
+          autoLaunch: getAutoLaunchEnabled(),
+        },
+      }),
     });
     lastHeartbeatAt = new Date().toISOString();
     logLifecycle("heartbeat:sent");
@@ -818,9 +828,13 @@ async function handleProtocolUrlAfterReady(url) {
 
   logLifecycle("protocol:received", { url, action: action.type });
 
-  if (action.type === "wake" || action.type === "open-background") {
+  if (action.type === "wake") {
     wakeOnDemandMode = true;
     logLifecycle("wake mode enabled", { action: action.type });
+    await startBackgroundAgent();
+  } else if (action.type === "open-background") {
+    wakeOnDemandMode = false;
+    logLifecycle("background mode enabled", { action: action.type });
     await startBackgroundAgent();
   } else if (action.type === "open") {
     await startBackgroundAgent();
@@ -860,20 +874,18 @@ function shouldStartHidden(argv) {
 function initializeWakeModeFromArgv(argv) {
   const startupMode = detectStartupMode(argv);
 
-  if (startupMode === "background" || startupMode === "hidden") {
-    wakeOnDemandMode = true;
-    logLifecycle("wake mode enabled", { source: "argv", startupMode });
-    return;
-  }
-
   const protocolArg = extractProtocolUrl(argv);
   if (!protocolArg) return;
 
   const action = parseProtocolAction(protocolArg);
-  if (action?.type === "wake" || action?.type === "open-background") {
+  if (action?.type === "wake") {
     wakeOnDemandMode = true;
     logLifecycle("wake mode enabled", { action: action.type });
+    return;
   }
+
+  wakeOnDemandMode = false;
+  logLifecycle("background mode enabled", { source: "argv", startupMode });
 }
 
 ipcMain.handle("agent:get-state", async () => {

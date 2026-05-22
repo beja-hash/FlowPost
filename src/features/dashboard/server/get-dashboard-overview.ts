@@ -16,6 +16,13 @@ const platformSlots = [
   { key: "rbk", name: "RBK.ru", slug: "rbk" },
 ] as const;
 
+function isScheduledLikePublication(status: PublicationStatus) {
+  return (
+    status === PublicationStatus.SCHEDULED ||
+    status === PublicationStatus.WAITING_AGENT
+  );
+}
+
 function roundRate(part: number, whole: number) {
   if (whole === 0) {
     return 0;
@@ -105,7 +112,7 @@ function buildPlatformAnalytics(
       (publication) => publication.status === PublicationStatus.FAILED,
     ).length;
     const scheduledPublications = matches.filter(
-      (publication) => publication.status === PublicationStatus.SCHEDULED,
+      (publication) => isScheduledLikePublication(publication.status),
     ).length;
     const lastPublication = matches
       .map((publication) => publication.publishedAt ?? publication.updatedAt)
@@ -175,7 +182,7 @@ function buildRecentActivity(
       });
     }
 
-    if (publication.status === PublicationStatus.SCHEDULED) {
+    if (isScheduledLikePublication(publication.status)) {
       publicationItems.push({
         id: `${publication.id}-scheduled`,
         kind: "scheduled",
@@ -362,7 +369,7 @@ export async function getDashboardOverview(
     (publication) => publication.status === PublicationStatus.FAILED,
   ).length;
   const scheduledPublications = publications.filter(
-    (publication) => publication.status === PublicationStatus.SCHEDULED,
+    (publication) => isScheduledLikePublication(publication.status),
   ).length;
   const totalPublications = publications.length;
   const trackedClicks = publications.reduce(

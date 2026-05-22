@@ -1,0 +1,4 @@
+ALTER TYPE "PublicationStatus" ADD VALUE IF NOT EXISTS 'WAITING_AGENT';
+
+ALTER TABLE "AgentDevice"
+  ADD COLUMN IF NOT EXISTS "capabilities" JSONB;

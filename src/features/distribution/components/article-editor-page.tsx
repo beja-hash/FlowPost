@@ -109,6 +109,7 @@ const generationMessages = [
 const publicationLabels: Record<PublicationStatus, string> = {
   PLANNED: "Черновик",
   SCHEDULED: "Запланировано",
+  WAITING_AGENT: "Ожидает agent",
   PUBLISHING: "Публикуется",
   PUBLISHED: "Опубликовано",
   FAILED: "Ошибка",
@@ -207,7 +208,10 @@ function statusTone(status: PublicationStatus) {
     return "danger";
   }
 
-  if (status === PublicationStatus.PUBLISHING) {
+  if (
+    status === PublicationStatus.PUBLISHING ||
+    status === PublicationStatus.WAITING_AGENT
+  ) {
     return "warning";
   }
 
@@ -340,7 +344,18 @@ function isOverdueScheduled(asset?: DistributionAssetListItem) {
   );
 }
 
+function isScheduledLikeStatus(status: PublicationStatus) {
+  return (
+    status === PublicationStatus.SCHEDULED ||
+    status === PublicationStatus.WAITING_AGENT
+  );
+}
+
 function publicationStatusLabel(asset: DistributionAssetListItem | undefined, fallback: PublicationStatus) {
+  if (asset?.publicationStatus === PublicationStatus.WAITING_AGENT) {
+    return "Agent offline";
+  }
+
   if (asset?.publicationStatus === PublicationStatus.SCHEDULED && asset.scheduledAt) {
     return isOverdueScheduled(asset)
       ? "Ожидает публикации"
@@ -380,7 +395,7 @@ export function ArticleEditorPage({
     selectedPlatform?.slug?.toLowerCase().includes("vc") ? "vc" : "dzen";
   const isBriefLoading = Boolean(briefLoading);
   const agentDisconnected =
-    form.publicationStatus === PublicationStatus.SCHEDULED &&
+    isScheduledLikeStatus(form.publicationStatus) &&
     agentState !== null &&
     agentState !== "active" &&
     agentState !== "busy";
@@ -965,7 +980,12 @@ export function ArticleEditorPage({
                   {currentAsset.publicationLastError}
                 </p>
               ) : null}
-              {isOverdueScheduled(currentAsset) ? (
+              {form.publicationStatus === PublicationStatus.WAITING_AGENT ? (
+                <p className="text-destructive mt-2 text-sm">
+                  Время публикации прошло, но agent был offline. После запуска
+                  agent задача будет взята в работу.
+                </p>
+              ) : isOverdueScheduled(currentAsset) ? (
                 <p className="text-destructive mt-2 text-sm">
                   Время публикации прошло, но задача ещё не была обработана.
                   Проверьте agent/scheduler.
@@ -1013,11 +1033,11 @@ export function ArticleEditorPage({
                   disabled={isPending || !canRunAssetActions}
                 >
                   <CalendarClock />
-                  {form.publicationStatus === PublicationStatus.SCHEDULED
+                  {isScheduledLikeStatus(form.publicationStatus)
                     ? "Изменить время"
                     : "Запланировать"}
                 </Button>
-                {form.publicationStatus === PublicationStatus.SCHEDULED ? (
+                {isScheduledLikeStatus(form.publicationStatus) ? (
                   <Button
                     variant="ghost"
                     size="sm"
@@ -1373,7 +1393,8 @@ export function ArticleEditorPage({
                     <CalendarClock />
                     {currentAsset?.scheduledAt ? "Изменить время" : "Запланировать"}
                   </Button>
-                  {currentAsset?.publicationStatus === PublicationStatus.SCHEDULED ? (
+                  {currentAsset?.publicationStatus &&
+                  isScheduledLikeStatus(currentAsset.publicationStatus) ? (
                     <Button
                       type="button"
                       size="sm"
@@ -1405,6 +1426,7 @@ export function ArticleEditorPage({
                   {[
                     PublicationStatus.PLANNED,
                     PublicationStatus.SCHEDULED,
+                    PublicationStatus.WAITING_AGENT,
                     PublicationStatus.PUBLISHING,
                     PublicationStatus.PUBLISHED,
                     PublicationStatus.FAILED,

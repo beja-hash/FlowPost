@@ -14,6 +14,8 @@ const autoLaunch = document.getElementById("autoLaunch");
 const backgroundStatus = document.getElementById("backgroundStatus");
 const heartbeatStatus = document.getElementById("heartbeatStatus");
 const lastHeartbeat = document.getElementById("lastHeartbeat");
+const appVersion = document.getElementById("appVersion");
+const scheduledStatus = document.getElementById("scheduledStatus");
 let operation = "idle";
 
 const userSafeFallbacks = {
@@ -67,6 +69,10 @@ function applyState(state) {
   lastHeartbeat.textContent = state.lastHeartbeatAt
     ? new Date(state.lastHeartbeatAt).toLocaleString()
     : "нет данных";
+  appVersion.textContent = state.appVersion || "нет данных";
+  scheduledStatus.textContent = state.connected
+    ? "Agent работает в фоне. Запланированные публикации будут выполнены автоматически."
+    : "Agent не подключён. Запланированные публикации не будут выполнены.";
   if (state.pairingCode) {
     pairingCode.value = state.pairingCode;
   }

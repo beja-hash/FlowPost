@@ -38,8 +38,8 @@
       <section class="card trust">
         <h2>Фоновая работа</h2>
         <p>
-          FlowPost Agent работает в фоне и открывает браузер, когда вы
-          запускаете публикацию из веб-кабинета.
+          FlowPost Agent работает в фоне и сам запускает браузер для
+          запланированных публикаций.
         </p>
         <label class="toggle">
           <input id="autoLaunch" type="checkbox" />
@@ -51,6 +51,10 @@
           <li>
             Последняя связь с FlowPost:
             <span id="lastHeartbeat">нет данных</span>
+          </li>
+          <li>Версия Agent: <span id="appVersion">нет данных</span></li>
+          <li id="scheduledStatus">
+            Запланированные публикации будут выполнены автоматически
           </li>
         </ul>
       </section>

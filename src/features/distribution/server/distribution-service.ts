@@ -766,6 +766,7 @@ export async function createDistributionAsset(
         platformId: platform.id,
         status: publicationStatus,
         scheduledAt,
+        lastError: null,
       },
     });
 
@@ -935,6 +936,9 @@ export async function updateDistributionAsset(
         platformId,
         status: nextPublicationStatus,
         scheduledAt: nextScheduledAt,
+        processingAt: null,
+        lockedAt: null,
+        lastError: null,
         publishedAt:
           nextPublicationStatus === PublicationStatus.PUBLISHED
             ? (currentPublication.publishedAt ?? new Date())

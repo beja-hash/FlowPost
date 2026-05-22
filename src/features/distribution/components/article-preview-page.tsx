@@ -13,6 +13,7 @@ type ArticlePreviewPageProps = {
 const statusLabels = {
   PLANNED: "черновик",
   SCHEDULED: "запланировано",
+  WAITING_AGENT: "ожидает agent",
   PUBLISHING: "публикуется",
   PUBLISHED: "опубликовано",
   FAILED: "ошибка",
@@ -28,7 +29,7 @@ function publicationTone(status: DistributionAssetListItem["publicationStatus"])
     return "danger";
   }
 
-  if (status === "PUBLISHING") {
+  if (status === "PUBLISHING" || status === "WAITING_AGENT") {
     return "warning";
   }
 
@@ -185,6 +186,10 @@ function isOverdueScheduled(asset: DistributionAssetListItem) {
 }
 
 function publicationStatusLabel(asset: DistributionAssetListItem) {
+  if (asset.publicationStatus === "WAITING_AGENT") {
+    return "agent offline";
+  }
+
   if (asset.publicationStatus === "SCHEDULED" && asset.scheduledAt) {
     return isOverdueScheduled(asset)
       ? "ожидает публикации"
@@ -224,7 +229,11 @@ export function ArticlePreviewPage({ asset }: ArticlePreviewPageProps) {
                   {asset.brandName} · {asset.platformName}
                 </span>
               </div>
-              {isOverdueScheduled(asset) ? (
+              {asset.publicationStatus === "WAITING_AGENT" ? (
+                <p className="text-destructive mt-2 text-sm">
+                  Время публикации прошло, но agent был offline.
+                </p>
+              ) : isOverdueScheduled(asset) ? (
                 <p className="text-destructive mt-2 text-sm">
                   Время публикации прошло, но задача ещё не была обработана.
                   Проверьте agent/scheduler.

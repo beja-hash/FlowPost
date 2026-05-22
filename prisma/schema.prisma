@@ -75,6 +75,7 @@ enum VariantStatus {
 enum PublicationStatus {
   PLANNED
   SCHEDULED
+  WAITING_AGENT
   PUBLISHING
   PUBLISHED
   FAILED
@@ -459,6 +460,7 @@ model AgentDevice {
   status     AgentDeviceStatus @default(ACTIVE)
   platform   String?           @db.VarChar(80)
   appVersion String?           @db.VarChar(40)
+  capabilities Json?
   createdAt  DateTime          @default(now())
   lastSeenAt DateTime?
   revokedAt  DateTime?
