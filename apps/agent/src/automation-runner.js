@@ -1004,8 +1004,8 @@ function createAutomationRunner({ app, sendState, logJob }) {
     }
   }
 
-  async function selectTextInEditable(locator, text) {
-    return locator.evaluate((root, targetText) => {
+  async function selectTextInEditable(page, locator, text) {
+    const selected = await locator.evaluate((root, targetText) => {
       const needle = String(targetText || "").trim();
       if (!needle) return false;
 
@@ -1029,6 +1029,241 @@ function createAutomationRunner({ app, sendState, logJob }) {
 
       return false;
     }, text);
+    if (selected) {
+      await page.waitForTimeout(300);
+    }
+    return selected;
+  }
+
+  async function clickDzenFloatingToolbarLinkButton(page) {
+    const clicked = await page
+      .evaluate(() => {
+        const visible = (element) => {
+          const rect = element.getBoundingClientRect();
+          const style = window.getComputedStyle(element);
+          return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.visibility !== "hidden" &&
+            style.display !== "none" &&
+            style.opacity !== "0"
+          );
+        };
+        const namedButton = Array.from(document.querySelectorAll("button")).find((button) => {
+          if (!visible(button)) return false;
+          const label = [
+            button.getAttribute("aria-label"),
+            button.getAttribute("title"),
+            button.textContent,
+          ]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase();
+          return /ссыл|link/.test(label);
+        });
+        if (namedButton) {
+          namedButton.click();
+          return true;
+        }
+
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0) return false;
+        const rangeRect = selection.getRangeAt(0).getBoundingClientRect();
+        const selectedButtons = Array.from(document.querySelectorAll("button"))
+          .filter((button) => visible(button))
+          .map((button) => {
+            const rect = button.getBoundingClientRect();
+            const svgText = Array.from(button.querySelectorAll("svg, path, use"))
+              .map((node) =>
+                [
+                  node.getAttribute("aria-label"),
+                  node.getAttribute("data-testid"),
+                  node.getAttribute("href"),
+                  node.getAttribute("xlink:href"),
+                  node.getAttribute("class"),
+                ]
+                  .filter(Boolean)
+                  .join(" "),
+              )
+              .join(" ")
+              .toLowerCase();
+            return { button, rect, svgText };
+          })
+          .filter(({ rect }) => {
+            const nearSelection =
+              rect.bottom < rangeRect.top + 160 &&
+              rect.top > rangeRect.top - 180 &&
+              rect.left < rangeRect.right + 420 &&
+              rect.right > rangeRect.left - 420;
+            return nearSelection;
+          });
+
+        const linkIcon = selectedButtons.find(({ svgText }) => /link|chain|ссыл/.test(svgText));
+        if (linkIcon) {
+          linkIcon.button.click();
+          return true;
+        }
+
+        return false;
+      })
+      .catch(() => false);
+
+    if (clicked) {
+      await humanDelay(300, 700);
+    }
+    return clicked;
+  }
+
+  async function clickVcFloatingToolbarLinkButton(page) {
+    const clicked = await page
+      .evaluate(() => {
+        const visible = (element) => {
+          const rect = element.getBoundingClientRect();
+          const style = window.getComputedStyle(element);
+          return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.visibility !== "hidden" &&
+            style.display !== "none" &&
+            style.opacity !== "0"
+          );
+        };
+        const selection = window.getSelection();
+        const rangeRect =
+          selection && selection.rangeCount > 0
+            ? selection.getRangeAt(0).getBoundingClientRect()
+            : null;
+        const buttons = Array.from(document.querySelectorAll("button, [role='button']"))
+          .filter((button) => visible(button))
+          .map((button) => {
+            const rect = button.getBoundingClientRect();
+            const label = [
+              button.getAttribute("aria-label"),
+              button.getAttribute("title"),
+              button.textContent,
+              ...Array.from(button.querySelectorAll("svg, path, use")).map((node) =>
+                [
+                  node.getAttribute("aria-label"),
+                  node.getAttribute("data-testid"),
+                  node.getAttribute("href"),
+                  node.getAttribute("xlink:href"),
+                  node.getAttribute("class"),
+                ]
+                  .filter(Boolean)
+                  .join(" "),
+              ),
+            ]
+              .filter(Boolean)
+              .join(" ")
+              .toLowerCase();
+            return { button, rect, label };
+          });
+        const namedButton = buttons.find(({ label }) => /ссыл|link|chain/.test(label));
+        if (namedButton) {
+          namedButton.button.click();
+          return true;
+        }
+
+        if (!rangeRect) return false;
+        const toolbarButtons = buttons.filter(({ rect }) => {
+          const nearSelection =
+            rect.bottom < rangeRect.top + 180 &&
+            rect.top > rangeRect.top - 220 &&
+            rect.left < rangeRect.right + 520 &&
+            rect.right > rangeRect.left - 520;
+          return nearSelection;
+        });
+        const linkIcon = toolbarButtons.find(({ label }) => /ссыл|link|chain/.test(label));
+        if (linkIcon) {
+          linkIcon.button.click();
+          return true;
+        }
+
+        return false;
+      })
+      .catch(() => false);
+
+    if (clicked) {
+      await humanDelay(300, 700);
+    }
+    return clicked;
+  }
+
+  async function openEditorLinkTool(page, platform) {
+    if (platform === "dzen") {
+      const clickedToolbar = await clickDzenFloatingToolbarLinkButton(page);
+      if (clickedToolbar) {
+        return "toolbar";
+      }
+    }
+
+    if (platform === "vc") {
+      const clickedToolbar = await clickVcFloatingToolbarLinkButton(page);
+      if (clickedToolbar) {
+        return "toolbar";
+      }
+    }
+
+    const modifier = process.platform === "darwin" ? "Meta" : "Control";
+    await page.keyboard.press(`${modifier}+K`);
+    await humanDelay(400, 900);
+    return "shortcut";
+  }
+
+  async function findSafeLinkInput(page, platform, text) {
+    const linkField = await findFirstVisible(
+      [
+        { locator: page.locator('input[type="url"]:visible'), timeout: 2500 },
+        { locator: page.locator('input[placeholder*="https" i]:visible, input[placeholder*="url" i]:visible, input[placeholder*="ссыл" i]:visible'), timeout: 2500 },
+        { locator: page.locator('input[aria-label*="ссыл" i]:visible, input[aria-label*="url" i]:visible, input[aria-label*="link" i]:visible'), timeout: 2500 },
+        { locator: page.locator('textarea[placeholder*="https" i]:visible, textarea[placeholder*="url" i]:visible, textarea[placeholder*="ссыл" i]:visible'), timeout: 2500 },
+      ],
+      platform === "dzen" ? "DZEN_LINK_FIELD_NOT_FOUND" : "VC_LINK_FIELD_NOT_FOUND",
+      `Не удалось открыть поле ссылки для ${text}.`,
+      "add editor link",
+    );
+    const linkFieldLooksSafe = await linkField
+      .evaluate((field) => {
+        const tag = field.tagName.toLowerCase();
+        return tag === "input" || tag === "textarea";
+      })
+      .catch(() => false);
+    if (!linkFieldLooksSafe) {
+      throw automationError(
+        platform === "dzen" ? "DZEN_LINK_FIELD_NOT_FOUND" : "VC_LINK_FIELD_NOT_FOUND",
+        `Не удалось открыть безопасное поле ссылки для ${text}. Публикация остановлена.`,
+        `Link field for ${platform} was not an input/textarea; refusing to paste URL into editor.`,
+        "add editor link",
+      );
+    }
+
+    return linkField;
+  }
+
+  async function fillSafeLinkInput(page, linkField, url) {
+    await linkField.fill(url).catch(async () => {
+      const field = await waitVisibleEnabled(linkField);
+      await field.click({ timeout: 5000 });
+      const modifier = process.platform === "darwin" ? "Meta" : "Control";
+      await page.keyboard.press(`${modifier}+A`).catch(() => undefined);
+      await page.keyboard.insertText(url);
+    });
+  }
+
+  async function editorHasCtaLink(editorLocator, text, url) {
+    return editorLocator.evaluate(
+      (root, args) => {
+        const expectedText = args.text.toLowerCase();
+        const expectedUrl = args.url.toLowerCase();
+        const anchors = Array.from(root.querySelectorAll("a"));
+        return anchors.some((anchor) => {
+          const label = (anchor.textContent || "").trim().toLowerCase();
+          const href = String(anchor.getAttribute("href") || anchor.href || "").toLowerCase();
+          return label.includes(expectedText) && href.includes(expectedUrl);
+        });
+      },
+      { text, url },
+    ).catch(() => false);
   }
 
   async function addLinkToEditorText(page, editorLocator, payload, platform) {
@@ -1039,7 +1274,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
       return false;
     }
 
-    const selected = await selectTextInEditable(editorLocator, text).catch(() => false);
+    const selected = await selectTextInEditable(page, editorLocator, text).catch(() => false);
     if (!selected) {
       throw automationError(
         platform === "dzen" ? "DZEN_CTA_TEXT_NOT_FOUND" : "VC_CTA_TEXT_NOT_FOUND",
@@ -1049,36 +1284,13 @@ function createAutomationRunner({ app, sendState, logJob }) {
       );
     }
 
-    const modifier = process.platform === "darwin" ? "Meta" : "Control";
-    await page.keyboard.press(`${modifier}+K`);
-    await humanDelay(400, 900);
-
-    const linkField = await findFirstVisible(
-      [
-        { locator: page.locator('input[type="url"]'), timeout: 2500 },
-        { locator: page.getByPlaceholder(/url|https|ссыл/i), timeout: 2500 },
-        { locator: page.getByRole("textbox", { name: /url|ссыл|link/i }), timeout: 2500 },
-        { locator: page.locator('input[aria-label*="ссыл" i], input[aria-label*="url" i], input[placeholder*="ссыл" i], input[placeholder*="url" i]'), timeout: 2500 },
-      ],
-      platform === "dzen" ? "DZEN_LINK_FIELD_NOT_FOUND" : "VC_LINK_FIELD_NOT_FOUND",
-      `Не удалось открыть поле ссылки для ${text}.`,
-      "add editor link",
-    );
-    await pasteText(page, url, linkField);
+    await openEditorLinkTool(page, platform);
+    const linkField = await findSafeLinkInput(page, platform, text);
+    await fillSafeLinkInput(page, linkField, url);
     await page.keyboard.press("Enter");
     await humanDelay(700, 1300);
 
-    const linked = await editorLocator.evaluate(
-      (root, args) => {
-        const anchors = Array.from(root.querySelectorAll("a"));
-        return anchors.some((anchor) => {
-          const label = (anchor.textContent || "").trim().toLowerCase();
-          const href = String(anchor.getAttribute("href") || anchor.href || "");
-          return label.includes(args.text.toLowerCase()) && href.includes(args.url);
-        });
-      },
-      { text, url },
-    ).catch(() => false);
+    const linked = await editorHasCtaLink(editorLocator, text, url);
 
     if (!linked) {
       throw automationError(
