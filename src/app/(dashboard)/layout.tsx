@@ -1,6 +1,7 @@
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { AppHeader } from "@/components/layout/app-header";
 import { AppSidebar } from "@/components/layout/app-sidebar";
+import { ScheduledPublicationWatcher } from "@/features/agent/components/scheduled-publication-watcher";
 import { getWorkspaceShell } from "@/features/workspaces/server/workspace-service";
 import { requireSession } from "@/infrastructure/auth/session";
 
@@ -36,6 +37,7 @@ export default async function DashboardLayout({
 
   return (
     <SidebarProvider defaultOpen>
+      <ScheduledPublicationWatcher />
       <AppSidebar
         user={{
           name: session.user.name,

@@ -205,6 +205,18 @@ function friendlyPublishError(job: Pick<AgentJob, "result" | "error">) {
   }
 
   if (
+    code === "CTA_TEXT_NOT_FOUND_IN_BODY" ||
+    code === "DZEN_CTA_TEXT_NOT_FOUND" ||
+    code === "VC_CTA_TEXT_NOT_FOUND" ||
+    code === "DZEN_LINK_FIELD_NOT_FOUND" ||
+    code === "VC_LINK_FIELD_NOT_FOUND" ||
+    code === "DZEN_LINK_NOT_APPLIED" ||
+    code === "VC_LINK_NOT_APPLIED"
+  ) {
+    return "Не удалось добавить CTA-ссылку";
+  }
+
+  if (
     code === "CAPTCHA_REQUIRED" ||
     code === "WAITING_USER_ACTION" ||
     code === "DZEN_CAPTCHA_REQUIRED" ||
@@ -1015,7 +1027,7 @@ function buildPublishArticlePayload({
     brandName: article.brand.name,
     brandUrl: article.brand.siteUrl,
   });
-  const body = article.canonicalBody.trim();
+  const body = article.canonicalBody;
 
   return {
     articleId: article.id,
@@ -1539,6 +1551,18 @@ export async function claimDueScheduledPublicationsForAgent(
       triggerAt: triggerAt?.toISOString() ?? null,
       status: publication.status,
     });
+    console.log("[Scheduled Claim] publicationId", {
+      publicationId: publication.id,
+      articleId: publication.assetId,
+    });
+    console.log("[Scheduled Claim] scheduledAt", {
+      publicationId: publication.id,
+      scheduledAt: scheduledAt?.toISOString() ?? null,
+    });
+    console.log("[Scheduled Claim] now", {
+      publicationId: publication.id,
+      now: now.toISOString(),
+    });
 
     const result = await runPublicationJob({
       userId: device.userId,
@@ -1580,6 +1604,14 @@ export async function claimDueScheduledPublicationsForAgent(
       publicationId: publication.id,
       result: result?.status ?? "failed",
       jobId: result?.job?.id ?? null,
+    });
+    console.log("[Scheduled Claim] status transition result", {
+      publicationId: publication.id,
+      statusBefore: publication.status,
+      result: result?.status ?? "failed",
+      jobId: result?.job?.id ?? null,
+      expectedStatusAfter:
+        result?.status === "queued" ? PublicationStatus.PUBLISHING : null,
     });
 
     if (result?.job) {

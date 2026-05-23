@@ -315,6 +315,7 @@ async function sendHeartbeat() {
       }),
     });
     lastHeartbeatAt = new Date().toISOString();
+    console.log("[agent] heartbeat sent", { at: lastHeartbeatAt });
     logLifecycle("heartbeat:sent");
     sendState({ status: "heartbeat_active" });
   } catch (error) {
@@ -331,10 +332,12 @@ async function sendHeartbeat() {
   }
 }
 
-function startHeartbeat() {
+function startHeartbeat({ sendImmediately = true } = {}) {
   clearInterval(heartbeatTimer);
   heartbeatTimer = setInterval(() => void sendHeartbeat(), 12_000);
-  void sendHeartbeat();
+  if (sendImmediately) {
+    void sendHeartbeat();
+  }
 }
 
 function stopAgentLoops() {
@@ -412,13 +415,38 @@ async function runConnectPlatformJob(job) {
 }
 
 async function runPublishArticleJob(job) {
+  const scheduled = job.payload?.trigger === "scheduled";
   logLifecycle("job:publish-article:start", { jobId: job.id });
   console.log("[agent] job running", {
     id: job.id,
     type: job.type,
     platform: job.platform,
   });
-  await runner.runPublishArticleJob(job, updateJobStatus);
+  if (scheduled) {
+    console.log("[agent] scheduled publish started", {
+      jobId: job.id,
+      publicationId: job.payload?.publicationId ?? null,
+    });
+  }
+
+  try {
+    await runner.runPublishArticleJob(job, updateJobStatus);
+    if (scheduled) {
+      console.log("[agent] scheduled publish completed", {
+        jobId: job.id,
+        publicationId: job.payload?.publicationId ?? null,
+      });
+    }
+  } catch (error) {
+    if (scheduled) {
+      console.log("[agent] scheduled publish failed", {
+        jobId: job.id,
+        publicationId: job.payload?.publicationId ?? null,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    throw error;
+  }
 }
 
 async function handleJob(job) {
@@ -518,10 +546,15 @@ async function pollJobs() {
   }
 }
 
-async function pollScheduledPublications() {
+async function pollScheduledPublications({ immediate = false } = {}) {
   if (!settings.agentToken) return;
 
   const agentNow = new Date();
+  if (immediate) {
+    console.log("[agent] immediate scheduled poll", {
+      at: agentNow.toISOString(),
+    });
+  }
   console.log("[Scheduler] agent now", agentNow.toISOString());
 
   try {
@@ -544,6 +577,11 @@ async function pollScheduledPublications() {
             status: job.status,
           }))
         : [],
+    });
+    console.log("[agent] scheduled claim result", {
+      immediate,
+      queuedCount: result.queuedCount ?? 0,
+      checkedAt: result.checkedAt ?? null,
     });
 
     if ((result.queuedCount ?? 0) > 0) {
@@ -569,10 +607,13 @@ function startPolling() {
   clearInterval(scheduledTimer);
   pollingTimer = setInterval(() => void pollJobs(), 3000);
   scheduledTimer = setInterval(() => void pollScheduledPublications(), 10_000);
-  startHeartbeat();
+  startHeartbeat({ sendImmediately: false });
   void prewarmBrowser();
-  void pollScheduledPublications();
-  void pollJobs();
+  void (async () => {
+    await sendHeartbeat();
+    await pollScheduledPublications({ immediate: true });
+    await pollJobs();
+  })();
   console.log("[agent] polling started");
   logLifecycle("polling:started");
 }
@@ -587,6 +628,10 @@ async function startBackgroundAgent() {
     runner = createAutomationRunner({ app, sendState, logJob });
   }
 
+  console.log("[agent] startBackgroundAgent", {
+    wakeOnDemandMode,
+    backgroundStarted,
+  });
   await readSettings();
   createTray();
 
@@ -836,6 +881,7 @@ async function handleProtocolUrlAfterReady(url) {
   logLifecycle("protocol:received", { url, action: action.type });
 
   if (action.type === "wake") {
+    console.log("[agent] wake received", { url: action.url });
     wakeOnDemandMode = true;
     logLifecycle("wake mode enabled", { action: action.type });
     await startBackgroundAgent();

@@ -536,8 +536,6 @@ function createAutomationRunner({ app, sendState, logJob }) {
     const payload = validatePublishPayload(job);
     const platform = normalizePlatform(job.platform || job.payload?.platform);
     const title = payload.title;
-    const body = sanitizePublishBody(payload.content, payload);
-    assertNoUnsafeLinkText(body, platform, payload);
 
     const headless = shouldRunHeadless(job);
     const visibleDebugMode = isDebugVisiblePublish(job, headless);
@@ -560,6 +558,9 @@ function createAutomationRunner({ app, sendState, logJob }) {
     let page = null;
 
     try {
+      const body = canonicalPublishBody(payload.content, payload);
+      assertNoUnsafeLinkText(body, platform, payload);
+
       if (platform === "dzen") {
         const opened = await openPage(platform, DZEN_HOME_URL, { headless });
         page = opened.page;
@@ -911,11 +912,8 @@ function createAutomationRunner({ app, sendState, logJob }) {
     }).catch(() => undefined);
   }
 
-  const markdownLinkPattern = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gi;
   const bareUrlPattern = /https?:\/\/[^\s)]+/gi;
   const standaloneUrlPattern = /^https?:\/\/\S+$/i;
-  const junkCtaLinePattern =
-    /^(покупка услуг|покупка|услуги|купить|заказать|перейти по ссылке|переходите по ссылке|ссылка ниже|ссылка:?|cta:?|call to action:?|url:?)$/i;
   const junkCtaTextPattern =
     /^(покупка услуг|покупка|услуги|купить|заказать|перейти|перейти по ссылке|переходите по ссылке|ссылка ниже|ссылка|cta|call to action|url)$/i;
   const genericBrandNamePattern = /^(ai content distribution platform|content distribution platform)$/i;
@@ -992,50 +990,16 @@ function createAutomationRunner({ app, sendState, logJob }) {
     };
   }
 
-  function sanitizePublishBody(content, payload) {
+  function canonicalPublishBody(content, payload) {
     const ctaText = normalizeCtaText(payload);
     const ctaUrl = String(payload.ctaUrl || "").trim();
-    const original = String(content || "");
-    const removedPlainUrl = bareUrlPattern.test(original);
-    bareUrlPattern.lastIndex = 0;
-    const withoutMarkdownLinks = original.replace(markdownLinkPattern, "$1");
-    const withoutBareUrls = withoutMarkdownLinks.replace(bareUrlPattern, "");
-    const lines = withoutBareUrls
-      .replace(/\r\n/g, "\n")
-      .replace(/\r/g, "\n")
-      .split("\n")
-      .map((line) =>
-        line
-          .replace(/\*\*([^*]+)\*\*/g, "$1")
-          .replace(/`([^`]+)`/g, "$1")
-          .trim(),
-      )
-      .filter((line) => {
-        if (!line) return true;
-        return !standaloneUrlPattern.test(line) && !junkCtaLinePattern.test(line);
-      });
+    const body = String(content || "");
+    const ctaTextFound =
+      ctaText && body.toLowerCase().includes(ctaText.toLowerCase());
 
-    const ctaOnlyPattern = new RegExp(
-      `^${escapeRegExp(ctaText)}$`,
-      "i",
-    );
-    while (lines.length > 0) {
-      const last = String(lines[lines.length - 1] || "").trim();
-      if (!last || standaloneUrlPattern.test(last) || junkCtaLinePattern.test(last) || ctaOnlyPattern.test(last)) {
-        lines.pop();
-        continue;
-      }
-      break;
-    }
-
-    const text = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-    const ctaTextFound = ctaText && text.toLowerCase().includes(ctaText.toLowerCase());
-    const changed = normalizeTextForCompare(original) !== normalizeTextForCompare(text);
-
-    logPublishContent("original body length", { length: original.length });
-    logPublishContent("sanitized body length", { length: text.length });
-    logPublishContent("body changed before publish", { changed });
-    logPublishContent("removed plain URL", { removed: removedPlainUrl });
+    logPublishContent("original body length", { length: body.length });
+    logPublishContent("canonical body length", { length: body.length });
+    logPublishContent("body changed before publish", { changed: false });
     logCtaLink("publish", "ctaText", { ctaText });
     logCtaLink("publish", "ctaUrl", { ctaUrl: ctaUrl || null });
     logCtaLink("publish", "ctaText found in body", {
@@ -1046,12 +1010,12 @@ function createAutomationRunner({ app, sendState, logJob }) {
       throw automationError(
         "CTA_TEXT_NOT_FOUND_IN_BODY",
         `CTA text ${ctaText} не найден в статье. Нельзя добавить ссылку без изменения текста.`,
-        `CTA text "${ctaText}" was not found in sanitized publish body.`,
-        "sanitize publish content",
+        `CTA text "${ctaText}" was not found in canonical publish body.`,
+        "validate canonical publish content",
       );
     }
 
-    return text;
+    return body;
   }
 
   function publishGuardState(text, payload = {}) {

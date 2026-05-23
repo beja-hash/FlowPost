@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 
-const MINIMUM_LEAD_TIME_MS = 2 * 60 * 1000;
+const MINIMUM_LEAD_TIME_MS = 60 * 1000;
 const RECOMMENDED_LEAD_TIME_MS = 5 * 60 * 1000;
 
 type SchedulePublicationDialogProps = {
@@ -225,7 +225,7 @@ export function SchedulePublicationDialog({
 
     if (nextDelta < MINIMUM_LEAD_TIME_MS) {
       setError(
-        "Слишком близкое время. Лучше выбрать минимум через 5 минут, чтобы агент успел обработать задачу.",
+        "Слишком близкое время. Выберите минимум через 1 минуту, чтобы Agent успел обработать задачу.",
       );
       return;
     }
@@ -250,7 +250,8 @@ export function SchedulePublicationDialog({
         <div className="grid gap-5">
           {agentDisconnected ? (
             <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
-              Agent не подключён. Запланированные публикации не будут выполнены.
+              Agent сейчас не запущен. Пока вкладка FlowPost открыта, он
+              автоматически запустится за 30 секунд до публикации.
             </div>
           ) : null}
 

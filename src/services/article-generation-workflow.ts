@@ -298,11 +298,11 @@ export async function scheduleArticleForUser(
     );
   }
 
-  if (scheduledAt.getTime() - serverNow.getTime() < 2 * 60 * 1000) {
+  if (scheduledAt.getTime() - serverNow.getTime() < 60 * 1000) {
     throw new ArticleWorkflowError(
       400,
       "PUBLISH_AT_TOO_SOON",
-      "Слишком близкое время. Лучше выбрать минимум через 5 минут, чтобы агент успел обработать задачу.",
+      "Слишком близкое время. Выберите минимум через 1 минуту, чтобы Agent успел обработать задачу.",
     );
   }
 

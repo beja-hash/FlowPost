@@ -42,6 +42,18 @@ export type AgentAwakeForActionResult = {
   wakeStartedAt: string;
 };
 
+export type ScheduledPublicationWakeResult =
+  | {
+      status: "success";
+      awake: AgentAwakeForActionResult;
+    }
+  | {
+      status: "failed" | "locked";
+      awake: null;
+    };
+
+const SCHEDULED_WAKE_LOCK_TTL_MS = 60 * 1000;
+
 function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
@@ -100,14 +112,16 @@ export async function waitForFreshAgentHeartbeat(
 
 export async function ensureAgentAwakeForAction({
   onStatus,
+  startingMessage = "Запускаем FlowPost Agent...",
   readyMessage = "Agent запущен. Отправляем задачу...",
 }: {
   onStatus?: (message: string) => void;
+  startingMessage?: string;
   readyMessage?: string;
 } = {}) {
   const wakeStartedAt = new Date();
 
-  onStatus?.("Запускаем FlowPost Agent...");
+  onStatus?.(startingMessage);
   window.location.href = "flowpost-agent://wake";
 
   const result = await waitForFreshAgentHeartbeat(wakeStartedAt, {
@@ -125,6 +139,55 @@ export async function ensureAgentAwakeForAction({
 
   onStatus?.(readyMessage);
   return result;
+}
+
+export async function wakeAgentForScheduledPublication(
+  publicationId: string,
+  {
+    onStatus,
+  }: {
+    onStatus?: (message: string) => void;
+  } = {},
+): Promise<ScheduledPublicationWakeResult> {
+  const lockKey = `flowpost:scheduler-wake:${publicationId}`;
+  const now = Date.now();
+
+  try {
+    const lockedAt = Number(window.localStorage.getItem(lockKey));
+    if (Number.isFinite(lockedAt) && now - lockedAt < SCHEDULED_WAKE_LOCK_TTL_MS) {
+      console.info("[Scheduler Wake] lock skipped", {
+        publicationId,
+        lockedAt: new Date(lockedAt).toISOString(),
+      });
+      return { status: "locked", awake: null };
+    }
+
+    window.localStorage.setItem(lockKey, String(now));
+  } catch {
+    // Protocol wake still works when storage is unavailable.
+  }
+
+  console.info("[Scheduler Wake] triggering flowpost-agent://wake", {
+    publicationId,
+  });
+
+  const awake = await ensureAgentAwakeForAction({
+    onStatus,
+    startingMessage: "Запускаем agent для запланированной публикации...",
+    readyMessage: "Agent запущен. Публикация начнётся автоматически.",
+  });
+
+  if (!awake) {
+    console.error("[Scheduler Wake] wake failed", { publicationId });
+    onStatus?.("Не удалось запустить FlowPost Agent для автопубликации.");
+    return { status: "failed", awake: null };
+  }
+
+  console.info("[Scheduler Wake] wake success", {
+    publicationId,
+    deviceId: awake.device.id,
+  });
+  return { status: "success", awake };
 }
 
 export async function openAgentAndWait({

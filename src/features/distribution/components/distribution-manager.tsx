@@ -21,6 +21,10 @@ import {
   agentProtocolHint,
   ensureAgentAwakeForAction,
 } from "@/features/agent/client/agent-wake";
+import {
+  schedulerWakeStatusEventName,
+  type ScheduledPublicationWakeStatus,
+} from "@/features/agent/components/scheduled-publication-watcher";
 import type { BrandOption } from "@/features/brands/types";
 import {
   formatScheduleDateTime,
@@ -108,11 +112,11 @@ function formatTime(value?: string | null) {
   }).format(new Date(value));
 }
 
-function isOverdueScheduled(asset: DistributionAssetListItem) {
+function isOverdueScheduled(asset: DistributionAssetListItem, now = Date.now()) {
   return (
     asset.publicationStatus === "SCHEDULED" &&
     Boolean(asset.scheduledAt) &&
-    new Date(asset.scheduledAt!).getTime() <= Date.now()
+    new Date(asset.scheduledAt!).getTime() <= now
   );
 }
 
@@ -140,6 +144,34 @@ function publicationStatusLabel(asset: DistributionAssetListItem) {
   return statusLabels[asset.publicationStatus];
 }
 
+function scheduledAutomationMessage(
+  asset: DistributionAssetListItem,
+  wakeStatus: ScheduledPublicationWakeStatus | null,
+  now: number,
+) {
+  if (wakeStatus?.publicationId === asset.publicationId && wakeStatus.phase !== "locked") {
+    return wakeStatus.message;
+  }
+
+  if (asset.publicationStatus !== "SCHEDULED" || !asset.scheduledAt) {
+    return null;
+  }
+
+  const secondsUntilPublish = Math.round(
+    (new Date(asset.scheduledAt).getTime() - now) / 1000,
+  );
+
+  if (secondsUntilPublish <= 30 && secondsUntilPublish >= -120) {
+    return "Готовим автопубликацию. Запускаем FlowPost Agent...";
+  }
+
+  if (secondsUntilPublish < -120) {
+    return "Время публикации прошло, но задача ещё не была обработана. Проверьте Agent/Scheduler.";
+  }
+
+  return `Запланировано на ${formatTime(asset.scheduledAt)}.`;
+}
+
 export function DistributionManager({
   initialAssets,
   platformOptions,
@@ -154,6 +186,9 @@ export function DistributionManager({
   const [agentState, setAgentState] = useState<AgentState>(null);
   const [agentSnapshot, setAgentSnapshot] = useState<AgentSnapshot | null>(null);
   const [scheduleTargetId, setScheduleTargetId] = useState<string | null>(null);
+  const [schedulerWakeStatus, setSchedulerWakeStatus] =
+    useState<ScheduledPublicationWakeStatus | null>(null);
+  const [schedulerNow, setSchedulerNow] = useState(() => Date.now());
 
   const selectedAsset = useMemo(
     () => assets.find((asset) => asset.id === selectedId) ?? assets[0] ?? null,
@@ -187,6 +222,20 @@ export function DistributionManager({
   const scheduleTarget = scheduleTargetId
     ? assets.find((asset) => asset.id === scheduleTargetId) ?? null
     : null;
+  const selectedScheduleMessage = selectedAsset
+    ? scheduledAutomationMessage(selectedAsset, schedulerWakeStatus, schedulerNow)
+    : null;
+  const wakeFailed = schedulerWakeStatus?.phase === "failed";
+  const schedulerPreparing = assets.some((asset) => {
+    if (asset.publicationStatus !== "SCHEDULED" || !asset.scheduledAt) {
+      return false;
+    }
+
+    const seconds = Math.round(
+      (new Date(asset.scheduledAt).getTime() - schedulerNow) / 1000,
+    );
+    return seconds <= 30 && seconds >= -120;
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -220,6 +269,26 @@ export function DistributionManager({
       window.clearInterval(timer);
     };
   }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setSchedulerNow(Date.now()), 10_000);
+
+    function handleSchedulerWake(event: Event) {
+      const detail = (event as CustomEvent<ScheduledPublicationWakeStatus>).detail;
+      setSchedulerWakeStatus(detail);
+      setSchedulerNow(Date.now());
+
+      if (detail.phase === "success") {
+        void reloadAsset(detail.articleId).catch(() => undefined);
+      }
+    }
+
+    window.addEventListener(schedulerWakeStatusEventName, handleSchedulerWake);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener(schedulerWakeStatusEventName, handleSchedulerWake);
+    };
+  });
 
   async function reloadAssets(nextSelectedId?: string) {
     const response = await fetch("/api/assets");
@@ -606,9 +675,23 @@ export function DistributionManager({
         </Button>
       </div>
 
-      {agentDisconnected ? (
+      {wakeFailed ? (
+        <div className="rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          Не удалось запустить FlowPost Agent. Откройте Agent или нажмите
+          «Опубликовать» вручную.
+        </div>
+      ) : schedulerWakeStatus?.phase === "success" ? (
+        <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-800 dark:text-emerald-200">
+          Agent запущен. Публикация выполняется автоматически.
+        </div>
+      ) : schedulerPreparing ? (
         <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
-          Agent не запущен. Автопубликации не будут выполнены.
+          Готовим автопубликацию. Запускаем FlowPost Agent...
+        </div>
+      ) : agentDisconnected ? (
+        <div className="rounded-xl border border-primary/20 bg-primary/10 px-4 py-3 text-sm text-foreground">
+          Автопубликация запланирована. Пока эта вкладка FlowPost открыта,
+          Agent автоматически запустится за 30 секунд до публикации.
           {agentDetails ? ` ${agentDetails}.` : null}
         </div>
       ) : hasScheduledPublications &&
@@ -711,6 +794,12 @@ export function DistributionManager({
                         <p className="mt-3 text-sm text-muted-foreground">
                           {selectedAsset.brandName} · {selectedAsset.brandDomain}
                         </p>
+                        {selectedScheduleMessage &&
+                        selectedAsset.publicationStatus === "SCHEDULED" ? (
+                          <p className="mt-3 max-w-3xl text-sm text-muted-foreground">
+                            {selectedScheduleMessage}
+                          </p>
+                        ) : null}
                         {selectedAsset.publicationStatus === "FAILED" &&
                         selectedAsset.publicationLastError ? (
                           <p className="text-destructive mt-3 max-w-3xl text-sm">
