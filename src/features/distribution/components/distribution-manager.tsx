@@ -47,7 +47,11 @@ type AgentSnapshot = {
   device?: {
     appVersion?: string | null;
     lastSeenAt?: string | null;
-    capabilities?: { autoLaunch?: boolean } | null;
+    capabilities?: {
+      autoLaunch?: boolean;
+      buildId?: string;
+      buildTime?: string;
+    } | null;
   } | null;
   lastSeenAt?: string | null;
 };
@@ -208,11 +212,13 @@ export function DistributionManager({
     agentSnapshot?.device?.lastSeenAt ?? agentSnapshot?.lastSeenAt ?? null;
   const agentVersion = agentSnapshot?.device?.appVersion ?? null;
   const agentAutoLaunch = agentSnapshot?.device?.capabilities?.autoLaunch;
+  const agentBuildId = agentSnapshot?.device?.capabilities?.buildId ?? null;
   const agentDetails = [
     agentLastSeenAt
       ? `последний heartbeat: ${new Date(agentLastSeenAt).toLocaleString()}`
       : null,
     agentVersion ? `версия: ${agentVersion}` : null,
+    agentBuildId ? `build: ${agentBuildId}` : null,
     typeof agentAutoLaunch === "boolean"
       ? `автозапуск: ${agentAutoLaunch ? "включён" : "выключен"}`
       : null,

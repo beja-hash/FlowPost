@@ -15,6 +15,8 @@ const backgroundStatus = document.getElementById("backgroundStatus");
 const heartbeatStatus = document.getElementById("heartbeatStatus");
 const lastHeartbeat = document.getElementById("lastHeartbeat");
 const appVersion = document.getElementById("appVersion");
+const buildId = document.getElementById("buildId");
+const buildTime = document.getElementById("buildTime");
 const scheduledStatus = document.getElementById("scheduledStatus");
 let operation = "idle";
 
@@ -70,6 +72,8 @@ function applyState(state) {
     ? new Date(state.lastHeartbeatAt).toLocaleString()
     : "нет данных";
   appVersion.textContent = state.appVersion || "нет данных";
+  buildId.textContent = state.buildId || "нет данных";
+  buildTime.textContent = state.buildTime || "нет данных";
   scheduledStatus.textContent = state.connected
     ? "Agent работает в фоне. Запланированные публикации будут выполнены автоматически."
     : "Agent не подключён. Запланированные публикации не будут выполнены.";

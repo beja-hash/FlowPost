@@ -2,6 +2,12 @@ const { spawn } = require("node:child_process");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 
+const {
+  bodyTail,
+  inspectPublishingBody,
+  sanitizeBodyForPublishing,
+} = require("./publish-body-sanitizer");
+
 const SUPPORTED_PLATFORMS = new Set(["dzen", "vc"]);
 const DZEN_HOME_URL = "https://dzen.ru/";
 const VC_HOME_URL = "https://vc.ru/";
@@ -87,7 +93,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
     const jobType = normalizeJobType(job.type);
     const envValue = process.env.AGENT_SHOW_BROWSER_ON_PUBLISH;
     const showBrowserOnPublish =
-      envValue === undefined ? false : String(envValue).toLowerCase() === "true";
+      envValue === undefined ? true : String(envValue).toLowerCase() === "true";
 
     if (jobType === "publish_article" || jobType === "scheduled_publish") {
       return !showBrowserOnPublish;
@@ -536,6 +542,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
     const payload = validatePublishPayload(job);
     const platform = normalizePlatform(job.platform || job.payload?.platform);
     const title = payload.title;
+    const rawBody = String(payload.body || payload.content || "");
 
     const headless = shouldRunHeadless(job);
     const visibleDebugMode = isDebugVisiblePublish(job, headless);
@@ -543,7 +550,8 @@ function createAutomationRunner({ app, sendState, logJob }) {
     setBrowserState("running_job", { status: "publishing" });
     console.log("[agent] publish mode", {
       headless,
-      reason: headless ? "default headless publish" : "debug visible publish",
+      trigger: payload.trigger || "manual",
+      reason: headless ? "explicit headless publish" : "visible publish test mode",
     });
     console.log("[agent] publish started", {
       id: job.id,
@@ -558,7 +566,15 @@ function createAutomationRunner({ app, sendState, logJob }) {
     let page = null;
 
     try {
-      const body = canonicalPublishBody(payload.content, payload);
+      logAgentPublishBody("raw payload.body", rawBody, payload, platform);
+      logAgentPublishBody("before sanitize", rawBody, payload, platform);
+      const body = sanitizeBodyForPublishing(rawBody, {
+        ctaText: normalizeCtaText(payload),
+        ctaUrl: payload.ctaUrl,
+        brandName: payload.brandName,
+      });
+      logAgentPublishBody("after sanitize", body, payload, platform);
+      validateSanitizedPublishBody(body, payload);
       assertNoUnsafeLinkText(body, platform, payload);
 
       if (platform === "dzen") {
@@ -965,6 +981,20 @@ function createAutomationRunner({ app, sendState, logJob }) {
     });
   }
 
+  function logAgentPublishBody(stage, body, payload, platform) {
+    const diagnostics = inspectPublishingBody(body, {
+      ctaText: normalizeCtaText(payload),
+      ctaUrl: payload.ctaUrl,
+      brandName: payload.brandName,
+    });
+
+    console.log(`[Agent Publish] ${stage} tail:`, bodyTail(body));
+    console.log("[Agent Publish] contains plain url:", diagnostics.containsPlainUrl);
+    console.log("[Agent Publish] contains markdown:", diagnostics.containsMarkdownLink);
+    console.log("[Agent Publish] contains trailing cta:", diagnostics.containsTrailingCta);
+    console.log("[Agent Publish] platform:", platform);
+  }
+
   function containsForbiddenPublishText(text, ctaUrl = "") {
     const source = String(text || "");
     const normalizedUrl = normalizeUrlForCompare(ctaUrl);
@@ -990,32 +1020,27 @@ function createAutomationRunner({ app, sendState, logJob }) {
     };
   }
 
-  function canonicalPublishBody(content, payload) {
+  function validateSanitizedPublishBody(body, payload) {
     const ctaText = normalizeCtaText(payload);
     const ctaUrl = String(payload.ctaUrl || "").trim();
-    const body = String(content || "");
     const ctaTextFound =
       ctaText && body.toLowerCase().includes(ctaText.toLowerCase());
 
-    logPublishContent("original body length", { length: body.length });
-    logPublishContent("canonical body length", { length: body.length });
-    logPublishContent("body changed before publish", { changed: false });
+    logPublishContent("sanitized body length", { length: body.length });
     logCtaLink("publish", "ctaText", { ctaText });
     logCtaLink("publish", "ctaUrl", { ctaUrl: ctaUrl || null });
     logCtaLink("publish", "ctaText found in body", {
       found: Boolean(ctaTextFound),
     });
 
-    if (ctaUrl && !ctaTextFound) {
+    if (!ctaTextFound) {
       throw automationError(
         "CTA_TEXT_NOT_FOUND_IN_BODY",
         `CTA text ${ctaText} не найден в статье. Нельзя добавить ссылку без изменения текста.`,
-        `CTA text "${ctaText}" was not found in canonical publish body.`,
-        "validate canonical publish content",
+        `CTA text "${ctaText}" was not found in sanitized publish body.`,
+        "sanitize publish content",
       );
     }
-
-    return body;
   }
 
   function publishGuardState(text, payload = {}) {
@@ -1965,6 +1990,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
     await logStep("dzen", "title filled");
 
     await logStep("dzen", "paste body");
+    logAgentPublishBody("before pasteText", payload.body, payload, "dzen");
     await pasteText(page, payload.body, bodyField);
     await logStep("dzen", "body pasted");
     await logStep("dzen", "add cta link");
@@ -2087,6 +2113,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
     await humanDelay(500, 1000);
 
     await logStep("vc", "paste body");
+    logAgentPublishBody("before pasteText", payload.body, payload, "vc");
     await pasteText(page, payload.body);
     await logStep("vc", "body pasted");
     await logStep("vc", "add cta link");

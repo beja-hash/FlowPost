@@ -12,8 +12,10 @@ const os = require("node:os");
 const path = require("node:path");
 
 const { createAutomationRunner } = require("./automation-runner");
+const { version: APP_VERSION } = require("../package.json");
 
-const APP_VERSION = "0.1.0";
+const APP_BUILD_ID = "publish-sanitizer-visible-browser-20260523";
+const APP_BUILD_TIME = "2026-05-23T16:58:37Z";
 const DEFAULT_API_URL = "https://flowpost-3yxb.onrender.com";
 const settingsPath = path.join(app.getPath("userData"), "settings.json");
 let mainWindow;
@@ -166,6 +168,8 @@ function sendState(extra = {}) {
     browserCachePath: runner?.browserCachePath,
     platform: os.platform(),
     appVersion: APP_VERSION,
+    buildId: APP_BUILD_ID,
+    buildTime: APP_BUILD_TIME,
     autoLaunch: getAutoLaunchEnabled(),
     backgroundRunning: true,
     lastHeartbeatAt,
@@ -311,11 +315,18 @@ async function sendHeartbeat() {
           playwright: true,
           tray: true,
           autoLaunch: getAutoLaunchEnabled(),
+          buildId: APP_BUILD_ID,
+          buildTime: APP_BUILD_TIME,
         },
       }),
     });
     lastHeartbeatAt = new Date().toISOString();
-    console.log("[agent] heartbeat sent", { at: lastHeartbeatAt });
+    console.log("[agent] heartbeat sent", {
+      at: lastHeartbeatAt,
+      appVersion: APP_VERSION,
+      buildId: APP_BUILD_ID,
+      buildTime: APP_BUILD_TIME,
+    });
     logLifecycle("heartbeat:sent");
     sendState({ status: "heartbeat_active" });
   } catch (error) {
@@ -951,6 +962,8 @@ ipcMain.handle("agent:get-state", async () => {
     browserCachePath: runner?.browserCachePath,
     platform: os.platform(),
     appVersion: APP_VERSION,
+    buildId: APP_BUILD_ID,
+    buildTime: APP_BUILD_TIME,
     autoLaunch: getAutoLaunchEnabled(),
     backgroundRunning: true,
     lastHeartbeatAt,
@@ -1053,6 +1066,11 @@ app.on("open-url", (event, url) => {
 });
 
 app.whenReady().then(async () => {
+  console.log("[agent] build", {
+    appVersion: APP_VERSION,
+    buildId: APP_BUILD_ID,
+    buildTime: APP_BUILD_TIME,
+  });
   registerProtocol();
   runner = createAutomationRunner({ app, sendState, logJob });
   await readSettings();

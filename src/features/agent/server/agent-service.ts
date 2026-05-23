@@ -118,6 +118,28 @@ function scheduledLog(context: Record<string, unknown>) {
   console.log("[Scheduler]", context);
 }
 
+function publishBodyTail(body: string) {
+  return body.slice(-1000);
+}
+
+function publishBodyDiagnostics(body: string, ctaText: string) {
+  const escapedCtaText = ctaText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const finalLine = body
+    .replace(/\r\n/g, "\n")
+    .trim()
+    .split("\n")
+    .at(-1)
+    ?.trim();
+
+  return {
+    containsPlainUrl: /https?:\/\/[^\s)\]}>"']+/i.test(body),
+    containsMarkdownLink: /\[[^\]]+\]\(https?:\/\/[^)\s]+\)/i.test(body),
+    containsTrailingCta: Boolean(
+      finalLine && new RegExp(`^${escapedCtaText}$`, "i").test(finalLine),
+    ),
+  };
+}
+
 function parseActionStartedAt(value?: string | Date | null) {
   if (!value) {
     return null;
@@ -1028,6 +1050,15 @@ function buildPublishArticlePayload({
     brandUrl: article.brand.siteUrl,
   });
   const body = article.canonicalBody;
+  const bodyDiagnostics = publishBodyDiagnostics(body, resolvedCta.ctaText);
+
+  console.log("[Publish Payload] canonicalBody tail:", publishBodyTail(article.canonicalBody));
+  console.log("[Publish Payload] ctaText:", resolvedCta.ctaText);
+  console.log("[Publish Payload] ctaUrl:", resolvedCta.ctaUrl);
+  console.log("[Publish Payload] payload.body tail:", publishBodyTail(body));
+  console.log("[Publish Payload] contains plain url:", bodyDiagnostics.containsPlainUrl);
+  console.log("[Publish Payload] contains markdown link:", bodyDiagnostics.containsMarkdownLink);
+  console.log("[Publish Payload] contains trailing cta:", bodyDiagnostics.containsTrailingCta);
 
   return {
     articleId: article.id,
