@@ -5,6 +5,7 @@ const path = require("node:path");
 const {
   bodyTail,
   inspectPublishingBody,
+  resolvePublishCta,
   sanitizeBodyForPublishing,
 } = require("./publish-body-sanitizer");
 
@@ -568,23 +569,25 @@ function createAutomationRunner({ app, sendState, logJob }) {
     try {
       logAgentPublishBody("raw payload.body", rawBody, payload, platform);
       logAgentPublishBody("before sanitize", rawBody, payload, platform);
+      const resolvedCta = resolvePublishCta(payload);
       const body = sanitizeBodyForPublishing(rawBody, {
-        ctaText: normalizeCtaText(payload),
-        ctaUrl: payload.ctaUrl,
-        brandName: payload.brandName,
+        ...payload,
+        anchorText: resolvedCta.anchorText,
+        url: resolvedCta.url,
       });
-      logAgentPublishBody("after sanitize", body, payload, platform);
-      validateSanitizedPublishBody(body, payload);
-      assertNoUnsafeLinkText(body, platform, payload);
+      const publishPayload = { ...payload, title, body, content: body };
+      logAgentPublishBody("after sanitize", body, publishPayload, platform);
+      validateSanitizedPublishBody(body, publishPayload);
+      assertNoUnsafeLinkText(body, platform, publishPayload);
 
       if (platform === "dzen") {
         const opened = await openPage(platform, DZEN_HOME_URL, { headless });
         page = opened.page;
-        await publishToDzen(page, { ...payload, title, body, content: body });
+        await publishToDzen(page, publishPayload);
       } else if (platform === "vc") {
         const opened = await openPage(platform, VC_HOME_URL, { headless });
         page = opened.page;
-        await publishToVc(page, { ...payload, title, body, content: body });
+        await publishToVc(page, publishPayload);
       } else {
         throw new AutomationError(
           "UNSUPPORTED_PLATFORM",
@@ -929,32 +932,6 @@ function createAutomationRunner({ app, sendState, logJob }) {
   }
 
   const bareUrlPattern = /https?:\/\/[^\s)]+/gi;
-  const standaloneUrlPattern = /^https?:\/\/\S+$/i;
-  const junkCtaTextPattern =
-    /^(покупка услуг|покупка|услуги|купить|заказать|перейти|перейти по ссылке|переходите по ссылке|ссылка ниже|ссылка|cta|call to action|url)$/i;
-  const genericBrandNamePattern = /^(ai content distribution platform|content distribution platform)$/i;
-
-  function normalizeCtaText(payload) {
-    const raw = String(payload.ctaText || "").replace(/\s+/g, " ").trim();
-    if (raw && !junkCtaTextPattern.test(raw)) {
-      return raw;
-    }
-
-    const brandName = String(payload.brandName || "").replace(/\s+/g, " ").trim();
-    if (
-      brandName &&
-      !junkCtaTextPattern.test(brandName) &&
-      !genericBrandNamePattern.test(brandName.toLowerCase())
-    ) {
-      return brandName;
-    }
-
-    return "FlowPostAI";
-  }
-
-  function escapeRegExp(value) {
-    return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  }
 
   function normalizeTextForCompare(value) {
     return String(value || "")
@@ -982,17 +959,25 @@ function createAutomationRunner({ app, sendState, logJob }) {
   }
 
   function logAgentPublishBody(stage, body, payload, platform) {
+    const { anchorText, url } = resolvePublishCta(payload);
     const diagnostics = inspectPublishingBody(body, {
-      ctaText: normalizeCtaText(payload),
-      ctaUrl: payload.ctaUrl,
-      brandName: payload.brandName,
+      ...payload,
+      anchorText,
+      url,
     });
 
     console.log(`[Agent Publish] ${stage} tail:`, bodyTail(body));
+    console.log("[Agent Publish] platform:", platform);
+    console.log("[Agent Publish] ctaText:", payload.ctaText || null);
+    console.log("[Agent Publish] ctaUrl:", payload.ctaUrl || null);
+    console.log("[Agent Publish] brandName:", payload.brandName || null);
+    console.log("[Agent Publish] productName:", payload.productName || null);
+    console.log("[Agent Publish] siteName:", payload.siteName || null);
+    console.log("[Agent Publish] resolvedAnchorText:", anchorText);
+    console.log("[Agent Publish] resolvedUrl:", url);
     console.log("[Agent Publish] contains plain url:", diagnostics.containsPlainUrl);
     console.log("[Agent Publish] contains markdown:", diagnostics.containsMarkdownLink);
     console.log("[Agent Publish] contains trailing cta:", diagnostics.containsTrailingCta);
-    console.log("[Agent Publish] platform:", platform);
   }
 
   function containsForbiddenPublishText(text, ctaUrl = "") {
@@ -1008,7 +993,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
 
     const markdownFound = /\[[^\]]+\]\(https?:\/\/[^)\s]+\)/i.test(source);
     const forbiddenPhraseFound =
-      /(^|[\s.,;:!?()"'«»])(?:покупка услуг|купить|заказать)(?=$|[\s.,;:!?()"'«»])/i.test(
+      /(^|\n)\s*(?:покупка услуг|купить|заказать|перейти по ссылке|ссылка ниже|оформить|переходите(?: по ссылке)?|подробнее по ссылке)\s*[:.!?]?\s*($|\n)/im.test(
         source,
       );
 
@@ -1021,22 +1006,21 @@ function createAutomationRunner({ app, sendState, logJob }) {
   }
 
   function validateSanitizedPublishBody(body, payload) {
-    const ctaText = normalizeCtaText(payload);
-    const ctaUrl = String(payload.ctaUrl || "").trim();
+    const { anchorText: ctaText, url: ctaUrl } = resolvePublishCta(payload);
     const ctaTextFound =
-      ctaText && body.toLowerCase().includes(ctaText.toLowerCase());
+      Boolean(ctaText && body.toLowerCase().includes(ctaText.toLowerCase()));
 
     logPublishContent("sanitized body length", { length: body.length });
     logCtaLink("publish", "ctaText", { ctaText });
-    logCtaLink("publish", "ctaUrl", { ctaUrl: ctaUrl || null });
+    logCtaLink("publish", "ctaUrl", { ctaUrl });
     logCtaLink("publish", "ctaText found in body", {
-      found: Boolean(ctaTextFound),
+      found: ctaTextFound,
     });
 
-    if (!ctaTextFound) {
+    if (ctaText && ctaUrl && !ctaTextFound) {
       throw automationError(
         "CTA_TEXT_NOT_FOUND_IN_BODY",
-        `CTA text ${ctaText} не найден в статье. Нельзя добавить ссылку без изменения текста.`,
+        `CTA text ${ctaText} не найден в статье после очистки. Нельзя добавить ссылку без изменения текста.`,
         `CTA text "${ctaText}" was not found in sanitized publish body.`,
         "sanitize publish content",
       );
@@ -1044,25 +1028,21 @@ function createAutomationRunner({ app, sendState, logJob }) {
   }
 
   function publishGuardState(text, payload = {}) {
-    const ctaText = normalizeCtaText(payload);
-    const ctaUrl = String(payload.ctaUrl || "").trim();
+    const { anchorText, url: ctaUrl } = resolvePublishCta(payload);
     const source = String(text || "");
-    const ctaOnlyPattern = new RegExp(
-      `(^|\\n)\\s*${escapeRegExp(ctaText)}\\s*($|\\n)`,
-      "i",
-    );
     const forbidden = containsForbiddenPublishText(source, ctaUrl);
     const standaloneUrlFound = /(^|\n)\s*https?:\/\/\S+\s*($|\n)/i.test(source);
-    const standaloneCtaTextFound = ctaOnlyPattern.test(source);
+    const diagnostics = inspectPublishingBody(source, {
+      ...payload,
+      anchorText,
+      url: ctaUrl,
+    });
 
     return {
       ...forbidden,
       plainUrlFound: forbidden.plainUrlFound || standaloneUrlFound,
-      standaloneCtaTextFound,
-      found:
-        forbidden.found ||
-        standaloneUrlFound ||
-        standaloneCtaTextFound,
+      standaloneCtaTextFound: diagnostics.containsTrailingCta,
+      found: forbidden.found || standaloneUrlFound,
     };
   }
 
@@ -1505,21 +1485,23 @@ function createAutomationRunner({ app, sendState, logJob }) {
   }
 
   async function addLinkToEditorText(page, editorLocator, payload, platform) {
-    const text = normalizeCtaText(payload);
-    const url = String(payload.ctaUrl || "").trim();
+    const { anchorText: text, url } = resolvePublishCta(payload);
     const editorText = await editorLocator.innerText({ timeout: 5000 }).catch(() => "");
 
     logCtaLink(platform, "platform", { platform });
     logCtaLink(platform, "ctaText", { ctaText: text });
-    logCtaLink(platform, "ctaUrl", { ctaUrl: url || null });
+    logCtaLink(platform, "ctaUrl", { ctaUrl: url });
     logCtaLink(platform, "body contains ctaText", {
-      contains: editorText.toLowerCase().includes(text.toLowerCase()),
+      contains: Boolean(text && editorText.toLowerCase().includes(text.toLowerCase())),
     });
     logCtaLink(platform, "ctaText found in body", {
-      found: editorText.toLowerCase().includes(text.toLowerCase()),
+      found: Boolean(text && editorText.toLowerCase().includes(text.toLowerCase())),
     });
 
-    if (!url) {
+    if (!text || !url) {
+      logCtaLink(platform, "link skipped", {
+        reason: !text ? "anchor_text_missing" : "url_missing",
+      });
       return false;
     }
 
@@ -1552,7 +1534,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
     if (!linked) {
       throw automationError(
         platform === "dzen" ? "DZEN_LINK_NOT_APPLIED" : "VC_LINK_NOT_APPLIED",
-        `Не удалось добавить кликабельную CTA-ссылку ${text} в редактор ${platform === "dzen" ? "Dzen" : "VC.ru"}. Публикация остановлена.`,
+        "Не удалось добавить CTA-ссылку без изменения текста.",
         `Clickable link was not found in ${platform} editor after link insertion.`,
         "add editor link",
       );
@@ -1578,15 +1560,14 @@ function createAutomationRunner({ app, sendState, logJob }) {
       throw error;
     }
 
-    const url = String(payload.ctaUrl || "").trim();
-    const ctaText = normalizeCtaText(payload);
-    if (!url) {
+    const { anchorText: ctaText, url } = resolvePublishCta(payload);
+    if (!ctaText || !url) {
       logPublishGuard(platform, "plain URL found", {
         found: Boolean(guard?.plainUrlFound),
       });
       logPublishGuard(platform, "final publish allowed", {
         allowed: true,
-        reason: "cta_url_missing",
+        reason: !ctaText ? "cta_text_missing" : "cta_url_missing",
       });
       return;
     }
@@ -1625,7 +1606,7 @@ function createAutomationRunner({ app, sendState, logJob }) {
     if (!linked || !textMatchesBody || guard?.found) {
       throw automationError(
         platform === "dzen" ? "DZEN_LINK_NOT_APPLIED" : "VC_LINK_NOT_APPLIED",
-        "Публикация остановлена: CTA-ссылка не была корректно добавлена без изменения текста.",
+        "Не удалось добавить CTA-ссылку без изменения текста.",
         `Publish guard failed before ${platform} publish: linked=${linked}, textMatchesBody=${textMatchesBody}, guard=${JSON.stringify(guard)}.`,
         "validate article links",
       );

@@ -18,9 +18,6 @@ import {
   getPlatformConfig,
   type PlatformSlug,
 } from "@/infrastructure/platforms/platform-registry";
-import {
-  resolveArticleCta,
-} from "@/services/article-formatting";
 
 const TOKEN_PREFIX = "fp_agent_";
 const PAIRING_TTL_MINUTES = 15;
@@ -122,8 +119,47 @@ function publishBodyTail(body: string) {
   return body.slice(-1000);
 }
 
-function publishBodyDiagnostics(body: string, ctaText: string) {
-  const escapedCtaText = ctaText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+type PublishCtaMetadata = {
+  ctaText?: string | null;
+  ctaUrl?: string | null;
+  productName?: string | null;
+  brandName?: string | null;
+  siteName?: string | null;
+  brandUrl?: string | null;
+  websiteUrl?: string | null;
+  brand?: {
+    name?: string | null;
+    website?: string | null;
+    url?: string | null;
+  } | null;
+};
+
+function normalizePublishValue(value?: string | null) {
+  const normalized = String(value ?? "").replace(/\s+/g, " ").trim();
+  return normalized || null;
+}
+
+function resolvePublishCta(payload: PublishCtaMetadata) {
+  return {
+    anchorText:
+      normalizePublishValue(payload.ctaText) ??
+      normalizePublishValue(payload.productName) ??
+      normalizePublishValue(payload.brandName) ??
+      normalizePublishValue(payload.siteName) ??
+      normalizePublishValue(payload.brand?.name) ??
+      null,
+    url:
+      normalizePublishValue(payload.ctaUrl) ??
+      normalizePublishValue(payload.brandUrl) ??
+      normalizePublishValue(payload.websiteUrl) ??
+      normalizePublishValue(payload.brand?.website) ??
+      normalizePublishValue(payload.brand?.url) ??
+      null,
+  };
+}
+
+function publishBodyDiagnostics(body: string, anchorText: string | null) {
+  const escapedAnchorText = anchorText?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const finalLine = body
     .replace(/\r\n/g, "\n")
     .trim()
@@ -135,7 +171,9 @@ function publishBodyDiagnostics(body: string, ctaText: string) {
     containsPlainUrl: /https?:\/\/[^\s)\]}>"']+/i.test(body),
     containsMarkdownLink: /\[[^\]]+\]\(https?:\/\/[^)\s]+\)/i.test(body),
     containsTrailingCta: Boolean(
-      finalLine && new RegExp(`^${escapedCtaText}$`, "i").test(finalLine),
+      finalLine &&
+        escapedAnchorText &&
+        new RegExp(`^${escapedAnchorText}$`, "i").test(finalLine),
     ),
   };
 }
@@ -1043,21 +1081,28 @@ function buildPublishArticlePayload({
   userId: string;
   strategyTaskId?: string | null;
 }) {
-  const resolvedCta = resolveArticleCta({
+  const publishMetadata = {
     ctaText: article.ctaText,
     ctaUrl: article.ctaUrl,
     brandName: article.brand.name,
     brandUrl: article.brand.siteUrl,
-  });
+    websiteUrl: article.brand.siteUrl,
+  };
+  const resolvedCta = resolvePublishCta(publishMetadata);
   const body = article.canonicalBody;
-  const bodyDiagnostics = publishBodyDiagnostics(body, resolvedCta.ctaText);
+  const bodyDiagnostics = publishBodyDiagnostics(body, resolvedCta.anchorText);
 
   console.log("[Publish Payload] canonicalBody tail:", publishBodyTail(article.canonicalBody));
-  console.log("[Publish Payload] ctaText:", resolvedCta.ctaText);
-  console.log("[Publish Payload] ctaUrl:", resolvedCta.ctaUrl);
   console.log("[Publish Payload] payload.body tail:", publishBodyTail(body));
+  console.log("[Publish Payload] ctaText:", article.ctaText);
+  console.log("[Publish Payload] ctaUrl:", article.ctaUrl);
+  console.log("[Publish Payload] brandName:", article.brand.name);
+  console.log("[Publish Payload] productName:", null);
+  console.log("[Publish Payload] siteName:", null);
+  console.log("[Publish Payload] resolvedAnchorText:", resolvedCta.anchorText);
+  console.log("[Publish Payload] resolvedUrl:", resolvedCta.url);
   console.log("[Publish Payload] contains plain url:", bodyDiagnostics.containsPlainUrl);
-  console.log("[Publish Payload] contains markdown link:", bodyDiagnostics.containsMarkdownLink);
+  console.log("[Publish Payload] contains markdown:", bodyDiagnostics.containsMarkdownLink);
   console.log("[Publish Payload] contains trailing cta:", bodyDiagnostics.containsTrailingCta);
 
   return {
@@ -1075,9 +1120,11 @@ function buildPublishArticlePayload({
     title: article.title,
     content: body,
     body,
-    ctaText: resolvedCta.ctaText,
-    ctaUrl: resolvedCta.ctaUrl,
+    ctaText: article.ctaText,
+    ctaUrl: article.ctaUrl,
     brandName: article.brand.name,
+    brandUrl: article.brand.siteUrl,
+    websiteUrl: article.brand.siteUrl,
   };
 }
 

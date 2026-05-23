@@ -3,7 +3,7 @@ const plainUrlPattern = /https?:\/\/[^\s)\]}>"']+/gi;
 const plainUrlTestPattern = /https?:\/\/[^\s)\]}>"']+/i;
 const markdownLinkTestPattern = /\[[^\]]+\]\(https?:\/\/[^)\s]+\)/i;
 const junkCtaLinePattern =
-  /^(?:покупка услуг|купить|заказать|перейти по ссылке|переходите по ссылке|ссылка ниже)\s*[:.!?]?$/i;
+  /^(?:покупка услуг|купить|заказать|перейти по ссылке|ссылка ниже|оформить|переходите(?: по ссылке)?|подробнее по ссылке)\s*[:.!?]?$/i;
 
 function escapeRegExp(value) {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -13,10 +13,46 @@ function normalizeText(value) {
   return String(value || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
-function resolveCtaText(options = {}) {
-  return String(options.ctaText || options.brandName || "FlowPostAI")
-    .replace(/\s+/g, " ")
-    .trim();
+function normalizeValue(value) {
+  const normalized = String(value || "").replace(/\s+/g, " ").trim();
+  return normalized || null;
+}
+
+function resolvePublishCta(payload = {}) {
+  const brand =
+    payload.brand && typeof payload.brand === "object" ? payload.brand : {};
+
+  const anchorText =
+    normalizeValue(payload.ctaText) ||
+    normalizeValue(payload.productName) ||
+    normalizeValue(payload.brandName) ||
+    normalizeValue(payload.siteName) ||
+    normalizeValue(brand.name) ||
+    null;
+  const url =
+    normalizeValue(payload.ctaUrl) ||
+    normalizeValue(payload.brandUrl) ||
+    normalizeValue(payload.websiteUrl) ||
+    normalizeValue(brand.website) ||
+    normalizeValue(brand.url) ||
+    null;
+
+  return { anchorText, url };
+}
+
+function ctaTextCandidates(options = {}) {
+  const candidates = [
+    options.anchorText,
+    options.ctaText,
+    options.productName,
+    options.brandName,
+    options.siteName,
+    options.brand?.name,
+  ]
+    .map(normalizeValue)
+    .filter(Boolean);
+
+  return Array.from(new Set(candidates));
 }
 
 function trimBlankTail(lines) {
@@ -31,27 +67,23 @@ function bodyTail(body, limit = 1000) {
 
 function inspectPublishingBody(body, options = {}) {
   const source = String(body || "");
-  const ctaText = resolveCtaText(options);
+  const candidates = ctaTextCandidates(options);
   const lines = normalizeText(source).split("\n");
   trimBlankTail(lines);
   const lastLine = String(lines[lines.length - 1] || "").trim();
-  const ctaOnlyPattern = ctaText
-    ? new RegExp(`^${escapeRegExp(ctaText)}$`, "i")
-    : null;
 
   return {
     tail: bodyTail(source),
     containsPlainUrl: plainUrlTestPattern.test(source),
     containsMarkdownLink: markdownLinkTestPattern.test(source),
-    containsTrailingCta: Boolean(ctaOnlyPattern && ctaOnlyPattern.test(lastLine)),
+    containsTrailingCta: candidates.some((candidate) =>
+      new RegExp(`^${escapeRegExp(candidate)}$`, "i").test(lastLine),
+    ),
   };
 }
 
 function sanitizeBodyForPublishing(body, options = {}) {
-  const ctaText = resolveCtaText(options);
-  const ctaOnlyPattern = ctaText
-    ? new RegExp(`^${escapeRegExp(ctaText)}$`, "i")
-    : null;
+  const candidates = ctaTextCandidates(options);
   let cleanBody = normalizeText(body)
     .replace(markdownLinkPattern, "$1")
     .replace(plainUrlPattern, "");
@@ -62,13 +94,18 @@ function sanitizeBodyForPublishing(body, options = {}) {
 
   trimBlankTail(lines);
 
-  while (
-    ctaOnlyPattern &&
-    lines.length > 0 &&
-    ctaOnlyPattern.test(String(lines[lines.length - 1] || "").trim())
-  ) {
+  while (lines.length > 0) {
+    const lastLine = String(lines[lines.length - 1] || "").trim();
+    const trailingCandidate = candidates.find((candidate) =>
+      new RegExp(`^${escapeRegExp(candidate)}$`, "i").test(lastLine),
+    );
+
+    if (!trailingCandidate) {
+      break;
+    }
+
     const precedingBody = lines.slice(0, -1).join("\n");
-    if (!new RegExp(escapeRegExp(ctaText), "i").test(precedingBody)) {
+    if (!new RegExp(escapeRegExp(trailingCandidate), "i").test(precedingBody)) {
       break;
     }
 
@@ -83,5 +120,6 @@ function sanitizeBodyForPublishing(body, options = {}) {
 module.exports = {
   bodyTail,
   inspectPublishingBody,
+  resolvePublishCta,
   sanitizeBodyForPublishing,
 };
