@@ -1,118 +1,124 @@
-# Northstar UI System
+# FlowPost
 
-Static SaaS UI system built with:
+**AI-платформа для автоматического создания и распространения контента, который приводит пользователей на сайт.**
 
-- Next.js App Router
-- TypeScript
-- Tailwind CSS v4
-- shadcn/ui
+FlowPost помогает компаниям превращать информацию о продукте в готовые статьи, которые можно публиковать на внешних площадках и использовать как дополнительный канал привлечения клиентов.
 
-## What is included
+## Что делает FlowPost
 
-- Responsive dashboard shell with sidebar and topbar
-- Modern SaaS visual language inspired by Linear / Notion-style density
-- Reusable cards, tables, buttons, inputs, toggles, tabs, and modal patterns
-- Static mock pages with no business logic
+Вместо того чтобы вручную:
 
-## Routes
+* искать темы для статей;
+* писать тексты;
+* адаптировать их под разные площадки;
+* добавлять ссылки и призывы к действию;
+* регулярно публиковать контент;
 
-- `/dashboard` overview dashboard
-- `/projects` card system + management table
-- `/content` queue patterns + tabs
-- `/analytics` metric and reporting layouts
-- `/settings` buttons, inputs, toggles, modals
-- `/sign-in` auth screen template
-- `/pricing` marketing pricing template
+FlowPost автоматизирует этот процесс.
 
-## Structure
+Пользователь задаёт информацию о продукте или компании, после чего система генерирует готовый контент, ориентированный не только на чтение, но и на переходы на сайт.
+
+### Основной сценарий
 
 ```text
-src/
-  app/                route layouts and static demo pages
-  components/saas/    reusable SaaS-specific UI blocks
-  components/ui/      shadcn/ui primitives
-  entities/           shared navigation config
-  lib/                utilities and mock demo data
+Продукт / компания
+        ↓
+Анализ аудитории и продукта
+        ↓
+Выбор темы
+        ↓
+Генерация статьи
+        ↓
+Добавление нативного CTA
+        ↓
+Адаптация под площадку
+        ↓
+Публикация
+        ↓
+Переходы на сайт
+        ↓
+Потенциальные клиенты
 ```
 
-## Run locally
+## Главная идея
 
-```bash
-npm install
-npm run dev
+Обычная AI-генерация текста решает только задачу написания статьи.
+
+FlowPost решает задачу шире:
+
+> **Создать контент → привлечь внимание → заинтересовать продуктом → привести человека на сайт.**
+
+Поэтому система ориентируется не на количество сгенерированных текстов, а на их способность работать как маркетинговый инструмент.
+
+## Возможности
+
+* Генерация статей с помощью AI
+* Создание контента под конкретную аудиторию
+* Генерация заголовков и структуры статьи
+* Нативная интеграция продукта в материал
+* CTA и ссылки на сайт
+* Адаптация текста под разные площадки
+* Массовая генерация контента
+* Автоматизация контент-воронки
+
+## Пример
+
+Допустим, компания продаёт сервис автоматизации отдела продаж.
+
+Вместо прямой рекламы:
+
+> «Попробуйте наш сервис автоматизации продаж»
+
+FlowPost может создать полезную статью:
+
+> **«Почему менеджеры теряют до 30% потенциальных клиентов и как это исправить»**
+
+Внутри статьи раскрывается проблема, показываются способы её решения, а продукт компании становится одним из возможных инструментов решения.
+
+В конце пользователь получает естественный переход:
+
+```text
+Узнать подробнее → example.com
 ```
 
-## Verification
+Таким образом статья выглядит как полезный контент, а не как рекламный баннер.
 
-```bash
-npm run lint
-npm run typecheck
-npm run build
+## Архитектура
+
+Проект построен вокруг нескольких основных компонентов:
+
+```text
+                ┌──────────────┐
+                │   Web App    │
+                └──────┬───────┘
+                       │
+                       ↓
+                ┌──────────────┐
+                │   Backend    │
+                └──────┬───────┘
+                       │
+          ┌────────────┼────────────┐
+          ↓            ↓            ↓
+      AI Engine     Database     Queue
+          │                         │
+          ↓                         ↓
+      Generation               Publishing
+                                      │
+                                      ↓
+                              External Platforms
 ```
 
-## Сборка FlowPost Agent
+## Технологии
 
-FlowPost Agent — desktop-приложение, которое подключается к FlowPost по одноразовому pairing code и запускает локальный браузер через Playwright. Electron используется только как оболочка Agent: окно приложения, ввод кода, статус подключения, подготовка браузера, отключение и удаление локальных профилей.
+Проект использует современный стек для построения AI-продукта:
 
-Playwright runner находится в `apps/agent/src/automation-runner.js`. Он запускает Chromium через `chromium.launchPersistentContext` с `headless: false`. Профили браузера хранятся локально:
+* **Python**
+* **FastAPI**
+* **PostgreSQL**
+* **Redis**
+* **RQ / background jobs**
+* **React**
+* **LLM API**
 
-- macOS: `~/Library/Application Support/FlowPost/browser-profiles/dzen` и `~/Library/Application Support/FlowPost/browser-profiles/vc`
-- Windows: `%APPDATA%/FlowPost/browser-profiles/dzen` и `%APPDATA%/FlowPost/browser-profiles/vc`
+Конкретные интеграции и модели могут меняться в зави
 
-Пользователь не устанавливает Node.js, npm, Playwright или Chromium вручную. В текущей реализации используется first-run подготовка браузера: Agent проверяет Playwright Chromium в `%APPDATA%/FlowPost/ms-playwright` или `~/Library/Application Support/FlowPost/ms-playwright`, при необходимости скачивает его сам и показывает в UI статус “FlowPost подготавливает браузер для публикации”.
-
-```bash
-npm run agent:dev
-npm run agent:build:mac:arm64
-npm run agent:build:mac:x64
-npm run agent:build:mac:universal
-npm run agent:build:win
-npm run agent:build
-```
-
-Архитектуры:
-
-- `arm64` — Mac Apple Silicon: M1/M2/M3/M4.
-- `x64` — Intel Mac.
-- `universal` — объединенная macOS-сборка. Если локальная сборка universal нестабильна, используйте отдельные `arm64` и `x64` артефакты, а universal оставьте как release TODO.
-- `win` — Windows NSIS installer. Надежнее собирать на Windows runner в GitHub Actions.
-
-Стабильные имена артефактов:
-
-- `apps/agent/dist/FlowPost-Agent-0.1.0-arm64.dmg`
-- `apps/agent/dist/FlowPost-Agent-0.1.0-x64.dmg`
-- `apps/agent/dist/FlowPost-Agent-0.1.0-win.exe`
-
-Загрузите готовые файлы в GitHub Releases, например в release `agent-v0.1.0`, затем добавьте ссылки в Render env:
-
-```bash
-NEXT_PUBLIC_AGENT_MAC_DOWNLOAD_URL=https://github.com/<owner>/<repo>/releases/download/agent-v0.1.0/FlowPost-Agent-0.1.0-arm64.dmg
-NEXT_PUBLIC_AGENT_WINDOWS_DOWNLOAD_URL=https://github.com/<owner>/<repo>/releases/download/agent-v0.1.0/FlowPost-Agent-0.1.0-win.exe
-```
-
-Если позже разделяем Mac-ссылки по архитектурам:
-
-```bash
-NEXT_PUBLIC_AGENT_MAC_ARM64_DOWNLOAD_URL=https://github.com/<owner>/<repo>/releases/download/agent-v0.1.0/FlowPost-Agent-0.1.0-arm64.dmg
-NEXT_PUBLIC_AGENT_MAC_X64_DOWNLOAD_URL=https://github.com/<owner>/<repo>/releases/download/agent-v0.1.0/FlowPost-Agent-0.1.0-x64.dmg
-NEXT_PUBLIC_AGENT_WINDOWS_DOWNLOAD_URL=https://github.com/<owner>/<repo>/releases/download/agent-v0.1.0/FlowPost-Agent-0.1.0-win.exe
-```
-
-GitHub Actions:
-
-- `.github/workflows/build-agent.yml` собирает macOS `arm64`/`x64` DMG и Windows `.exe`.
-- Запускается вручную через `workflow_dispatch` или при push tag `agent-v*`.
-
-Signing/notarization:
-
-- macOS может показать предупреждение при первом запуске, если сборка не подписана Apple Developer ID и не notarized.
-- Windows может показать SmartScreen, если `.exe` не подписан code signing certificate.
-- Для production release нужно добавить Apple signing/notarization и Windows code signing. Не пишите в интерфейсе, что Apple или Microsoft уже проверили приложение, пока это не настроено.
-
-Render build command:
-
-```bash
-npm ci && npx prisma generate && npx prisma migrate deploy && npm run build
-```
-
-Do not add `npx playwright install --with-deps chromium` to the Render build. Visible browser automation belongs in FlowPost Desktop Agent, not on the web server.
